@@ -1,0 +1,77 @@
+[package]
+name = "bevy_shooter"
+version = "0.1.0"
+edition = "2024"
+build = "build.rs"
+
+[features]
+default = []
+# Enable bevy_log for development - explicitly use --features dev-logging
+dev-logging = ["bevy/bevy_log"]
+
+[dependencies]
+fastrand = { version = "2.3", features = ["js"] }
+smallvec = "1.13"
+bevy_platform = { version = "0.17.3", default-features = false, features = ["alloc"] }
+
+# Common Bevy dependency (features shared by all platforms)
+[dependencies.bevy]
+version = "0.17"
+default-features = false
+features = [
+    # --- Core ---
+    "std",
+    "bevy_state",
+
+    # --- Window / Winit ---
+    "bevy_window",
+    "bevy_winit",
+
+    # --- Rendering / 2D ---
+    "bevy_render",
+    "bevy_core_pipeline",
+
+    # --- Assets / Images ---
+    "bevy_asset",
+    "bevy_image",
+    "webp",
+
+    # --- Sprites ---
+    "bevy_sprite",
+    "bevy_sprite_render",
+
+    # --- UI / Text ---
+    "bevy_text",
+    "bevy_ui",
+    "bevy_ui_render",
+    "default_font",
+]
+
+# Native: add multi_threaded
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies.bevy]
+version = "0.17"
+default-features = false
+features = ["multi_threaded"]
+
+# WASM: add WebGL2
+[target.'cfg(target_arch = "wasm32")'.dependencies.bevy]
+version = "0.17"
+default-features = false
+features = ["webgl2"]
+
+# getrandom WASM support (required for Bevy 0.17)
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { version = "0.3", features = ["wasm_js"] }
+
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+debug = false
+overflow-checks = false
+strip = true
+
+[profile.dev]
+opt-level = 0

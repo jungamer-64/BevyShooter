@@ -1,0 +1,30 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, height=device-height, initial-scale=1" />
+    <title>Bevy Shooter</title>
+    <style>
+      html, body {
+        margin: 0;
+        padding: 0;
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        background: #020205;
+      }
+      canvas {
+        width: 100%;
+        height: 100%;
+        display: block;
+      }
+    </style>
+
+    <link data-trunk rel="rust" data-wasm-opt="0" />
+    <link data-trunk rel="copy-dir" href="assets" />
+
+  </head>
+  <body>
+    <canvas id="bevy"></canvas>
+  </body>
+</html>
