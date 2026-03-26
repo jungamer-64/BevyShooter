@@ -3,20 +3,19 @@ use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 use smallvec::SmallVec;
 
-use super::GameplaySet;
+use super::core::{Collider, GameBounds, Health, Score};
 use super::effects::{self, ShakeEvent};
 use super::enemy::{
-    ENEMY_BULLET_SIZE, ENEMY_SCALE, ENEMY_SIZE, Enemy, EnemyBullet, EnemyHealth, EnemyHitFlash,
-    EnemyType,
+    ENEMY_BULLET_SIZE, ENEMY_SCALE, ENEMY_SIZE, Enemy, EnemyBullet, EnemyHitFlash, EnemyType,
 };
 use super::player::{
-    BULLET_SCALE, BULLET_SIZE, Bullet, Invincible, PLAYER_SCALE, PLAYER_SIZE, Player, PowerUpType,
-    spawn_powerup,
+    BULLET_SCALE, BULLET_SIZE, Bullet, INVINCIBILITY_SECONDS, PLAYER_SCALE, PLAYER_SIZE, Player,
+    PlayerStatus,
 };
-use super::shared::{Collider, GameBounds, Health, Score};
+use super::powerup::{self, PowerUpKind};
 use super::state::{GameState, PlayState};
+use super::{GameplaySet, ResolveSet};
 
-const POWERUP_DROP_RATE: f32 = 0.3;
 const R_BULLET_ENEMY: i32 = 2;
 const R_PLAYER_ENEMY: i32 = 2;
 const R_PLAYER_BULLET: i32 = 2;
@@ -43,6 +42,23 @@ impl HitList {
             self.len += 1;
         }
     }
+}
+
+#[derive(Message, Debug, Clone, Copy)]
+pub enum CombatMessage {
+    Despawn(Entity),
+    EnemyHit(Entity),
+    EnemyDestroyed {
+        entity: Entity,
+        position: Vec3,
+        score: u32,
+        drop: Option<PowerUpKind>,
+    },
+    PlayerDamaged {
+        player: Entity,
+        defeated: bool,
+        consumed: Entity,
+    },
 }
 
 #[derive(Default)]
@@ -169,48 +185,6 @@ impl CollisionCache {
     }
 }
 
-enum CombatOutcome {
-    Despawn(Entity),
-    EnemyHit(Entity),
-    EnemyDestroyed {
-        entity: Entity,
-        position: Vec3,
-        score: u32,
-        drop: Option<PowerUpType>,
-    },
-    PlayerDamaged {
-        player: Entity,
-        defeated: bool,
-        consumed: Entity,
-    },
-}
-
-#[derive(Resource, Default)]
-struct CombatFrame {
-    outcomes: Vec<CombatOutcome>,
-    player_damage_resolved: bool,
-    shake_magnitude: f32,
-    shake_duration: f32,
-}
-
-impl CombatFrame {
-    fn clear(&mut self) {
-        self.outcomes.clear();
-        self.player_damage_resolved = false;
-        self.shake_magnitude = 0.0;
-        self.shake_duration = 0.0;
-    }
-
-    fn push(&mut self, outcome: CombatOutcome) {
-        self.outcomes.push(outcome);
-    }
-
-    fn add_shake(&mut self, magnitude: f32, duration: f32) {
-        self.shake_magnitude = self.shake_magnitude.max(magnitude);
-        self.shake_duration = self.shake_duration.max(duration);
-    }
-}
-
 type BulletCollisionQuery<'w, 's> = Query<
     'w,
     's,
@@ -225,7 +199,7 @@ type BulletCollisionQuery<'w, 's> = Query<
 >;
 
 type EnemyHealthQuery<'w, 's> =
-    Query<'w, 's, (&'static mut EnemyHealth, &'static EnemyType), With<Enemy>>;
+    Query<'w, 's, (&'static mut Health, &'static EnemyType), With<Enemy>>;
 
 type PlayerBodyQuery<'w, 's> = Query<
     'w,
@@ -235,7 +209,7 @@ type PlayerBodyQuery<'w, 's> = Query<
         &'static Transform,
         &'static Collider,
         &'static mut Health,
-        Option<&'static Invincible>,
+        &'static PlayerStatus,
     ),
     With<Player>,
 >;
@@ -256,46 +230,33 @@ pub struct CombatPlugin;
 impl Plugin for CombatPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<CollisionCache>()
-            .init_resource::<CombatFrame>()
+            .add_message::<CombatMessage>()
             .add_systems(
                 Update,
                 (
-                    prepare_collision_frame,
+                    prepare_collision_cache,
                     detect_bullet_enemy_collisions,
-                    detect_player_enemy_collisions,
-                    detect_player_enemy_bullet_collisions,
+                    detect_player_collisions,
                 )
                     .chain()
-                    .in_set(GameplaySet::Collision)
+                    .in_set(GameplaySet::Detect)
                     .run_if(in_state(GameState::InGame).and(in_state(PlayState::Playing))),
             )
             .add_systems(
                 Update,
-                (apply_combat_outcomes, despawn_expired)
-                    .chain()
-                    .in_set(GameplaySet::Cleanup)
+                apply_combat_outcomes
+                    .in_set(ResolveSet::Apply)
                     .run_if(in_state(GameState::InGame).and(in_state(PlayState::Playing))),
             );
     }
 }
 
-pub fn collide(pos_a: Vec3, size_a: Vec2, pos_b: Vec3, size_b: Vec2) -> bool {
-    let a_min = pos_a.truncate() - size_a / 2.0;
-    let a_max = pos_a.truncate() + size_a / 2.0;
-    let b_min = pos_b.truncate() - size_b / 2.0;
-    let b_max = pos_b.truncate() + size_b / 2.0;
-
-    a_min.x < b_max.x && a_max.x > b_min.x && a_min.y < b_max.y && a_max.y > b_min.y
-}
-
-fn prepare_collision_frame(
+fn prepare_collision_cache(
     mut cache: ResMut<CollisionCache>,
-    mut frame: ResMut<CombatFrame>,
     bounds: Res<GameBounds>,
     enemies: Query<(Entity, &Transform, &Collider), With<Enemy>>,
     enemy_bullets: Query<(Entity, &Transform, &Collider), With<EnemyBullet>>,
 ) {
-    frame.clear();
     cache.prepare(&bounds);
 
     for (entity, transform, collider) in &enemies {
@@ -313,7 +274,7 @@ fn prepare_collision_frame(
 
 fn detect_bullet_enemy_collisions(
     mut cache: ResMut<CollisionCache>,
-    mut frame: ResMut<CombatFrame>,
+    mut combat: MessageWriter<CombatMessage>,
     mut queries: BulletEnemyQueries,
 ) {
     debug_assert_collision_radii();
@@ -331,7 +292,6 @@ fn detect_bullet_enemy_collisions(
         }
 
         let bullet_position = bullet_transform.translation;
-        let bullet_size = bullet_collider.size;
         let (cx, cy) = cache.enemy_grid.cell_coords(bullet_position);
 
         for x in (cx - R_BULLET_ENEMY)..=(cx + R_BULLET_ENEMY) {
@@ -351,27 +311,29 @@ fn detect_bullet_enemy_collisions(
                         continue;
                     }
 
-                    if !collide(bullet_position, bullet_size, enemy_position, enemy_size) {
+                    if !bullet_collider.intersects(
+                        bullet_position,
+                        Collider { size: enemy_size },
+                        enemy_position,
+                    ) {
                         continue;
                     }
 
                     if let Ok((mut enemy_health, enemy_type)) =
                         queries.enemy_health.get_mut(enemy_entity)
                     {
-                        enemy_health.current = enemy_health.current.saturating_sub(1);
+                        let destroyed = enemy_health.damage(1);
 
-                        if enemy_health.current == 0 {
+                        if destroyed {
                             cache.hit_enemies.insert(enemy_entity);
-                            frame.push(CombatOutcome::EnemyDestroyed {
+                            combat.write(CombatMessage::EnemyDestroyed {
                                 entity: enemy_entity,
                                 position: enemy_position,
                                 score: enemy_type.score(),
-                                drop: roll_powerup_drop(),
+                                drop: powerup::roll_drop(),
                             });
-                            frame.add_shake(4.0, 0.06);
                         } else {
-                            frame.push(CombatOutcome::EnemyHit(enemy_entity));
-                            frame.add_shake(2.0, 0.03);
+                            combat.write(CombatMessage::EnemyHit(enemy_entity));
                         }
 
                         if let Some(existing_hits) = hit_list.as_mut() {
@@ -386,7 +348,7 @@ fn detect_bullet_enemy_collisions(
                         }
 
                         cache.hit_bullets.insert(bullet_entity);
-                        frame.push(CombatOutcome::Despawn(bullet_entity));
+                        combat.write(CombatMessage::Despawn(bullet_entity));
                         continue 'bullet_loop;
                     }
                 }
@@ -395,153 +357,137 @@ fn detect_bullet_enemy_collisions(
     }
 }
 
-fn detect_player_enemy_collisions(
+fn detect_player_collisions(
     mut cache: ResMut<CollisionCache>,
-    mut frame: ResMut<CombatFrame>,
+    mut combat: MessageWriter<CombatMessage>,
     mut player_query: PlayerCollisionQuery,
 ) {
-    let Ok((player_entity, player_transform, player_collider, mut health, invincible)) =
+    let Ok((player_entity, player_transform, player_collider, mut health, status)) =
         player_query.player.single_mut()
     else {
         return;
     };
 
     let player_position = player_transform.translation;
-    let player_size = player_collider.size;
-    let (cx, cy) = cache.enemy_grid.cell_coords(player_position);
+    let (enemy_x, enemy_y) = cache.enemy_grid.cell_coords(player_position);
+    let (bullet_x, bullet_y) = cache.enemy_bullet_grid.cell_coords(player_position);
 
-    if invincible.is_some() {
+    if status.is_invincible() {
+        {
+            let CollisionCache {
+                enemy_grid,
+                hit_enemies,
+                ..
+            } = &mut *cache;
+
+            for x in (enemy_x - R_PLAYER_ENEMY)..=(enemy_x + R_PLAYER_ENEMY) {
+                for y in (enemy_y - R_PLAYER_ENEMY)..=(enemy_y + R_PLAYER_ENEMY) {
+                    let Some(entries) = enemy_grid.get_cell(x, y) else {
+                        continue;
+                    };
+
+                    for &(enemy_entity, enemy_position, enemy_size) in entries {
+                        if hit_enemies.contains(&enemy_entity)
+                            || !player_collider.intersects(
+                                player_position,
+                                Collider { size: enemy_size },
+                                enemy_position,
+                            )
+                        {
+                            continue;
+                        }
+
+                        hit_enemies.insert(enemy_entity);
+                        combat.write(CombatMessage::EnemyDestroyed {
+                            entity: enemy_entity,
+                            position: enemy_position,
+                            score: 5,
+                            drop: None,
+                        });
+                    }
+                }
+            }
+        }
+
+        for x in (bullet_x - R_PLAYER_BULLET)..=(bullet_x + R_PLAYER_BULLET) {
+            for y in (bullet_y - R_PLAYER_BULLET)..=(bullet_y + R_PLAYER_BULLET) {
+                let Some(entries) = cache.enemy_bullet_grid.get_cell(x, y) else {
+                    continue;
+                };
+
+                for &(bullet_entity, bullet_position, bullet_size) in entries {
+                    if player_collider.intersects(
+                        player_position,
+                        Collider { size: bullet_size },
+                        bullet_position,
+                    ) {
+                        combat.write(CombatMessage::Despawn(bullet_entity));
+                    }
+                }
+            }
+        }
+
+        return;
+    }
+
+    {
         let CollisionCache {
             enemy_grid,
             hit_enemies,
             ..
         } = &mut *cache;
-        for x in (cx - R_PLAYER_ENEMY)..=(cx + R_PLAYER_ENEMY) {
-            for y in (cy - R_PLAYER_ENEMY)..=(cy + R_PLAYER_ENEMY) {
+
+        for x in (enemy_x - R_PLAYER_ENEMY)..=(enemy_x + R_PLAYER_ENEMY) {
+            for y in (enemy_y - R_PLAYER_ENEMY)..=(enemy_y + R_PLAYER_ENEMY) {
                 let Some(entries) = enemy_grid.get_cell(x, y) else {
                     continue;
                 };
 
                 for &(enemy_entity, enemy_position, enemy_size) in entries {
                     if hit_enemies.contains(&enemy_entity)
-                        || !collide(player_position, player_size, enemy_position, enemy_size)
+                        || !player_collider.intersects(
+                            player_position,
+                            Collider { size: enemy_size },
+                            enemy_position,
+                        )
                     {
                         continue;
                     }
 
+                    let defeated = health.damage(1);
                     hit_enemies.insert(enemy_entity);
-                    frame.push(CombatOutcome::EnemyDestroyed {
-                        entity: enemy_entity,
-                        position: enemy_position,
-                        score: 5,
-                        drop: None,
+                    combat.write(CombatMessage::PlayerDamaged {
+                        player: player_entity,
+                        defeated,
+                        consumed: enemy_entity,
                     });
-                    frame.add_shake(4.0, 0.06);
+                    return;
                 }
             }
         }
-
-        return;
     }
 
-    let CollisionCache {
-        enemy_grid,
-        hit_enemies,
-        ..
-    } = &mut *cache;
-    for x in (cx - R_PLAYER_ENEMY)..=(cx + R_PLAYER_ENEMY) {
-        for y in (cy - R_PLAYER_ENEMY)..=(cy + R_PLAYER_ENEMY) {
-            let Some(entries) = enemy_grid.get_cell(x, y) else {
-                continue;
-            };
-
-            for &(enemy_entity, enemy_position, enemy_size) in entries {
-                if hit_enemies.contains(&enemy_entity)
-                    || !collide(player_position, player_size, enemy_position, enemy_size)
-                {
-                    continue;
-                }
-
-                health.current = health.current.saturating_sub(1);
-                hit_enemies.insert(enemy_entity);
-                frame.player_damage_resolved = true;
-                frame.push(CombatOutcome::PlayerDamaged {
-                    player: player_entity,
-                    defeated: health.current == 0,
-                    consumed: enemy_entity,
-                });
-
-                if enemy_position != Vec3::ZERO {
-                    frame.add_shake(
-                        if health.current == 0 { 20.0 } else { 14.0 },
-                        if health.current == 0 { 0.3 } else { 0.15 },
-                    );
-                }
-                return;
-            }
-        }
-    }
-}
-
-fn detect_player_enemy_bullet_collisions(
-    cache: Res<CollisionCache>,
-    mut frame: ResMut<CombatFrame>,
-    mut player_query: PlayerCollisionQuery,
-) {
-    let Ok((player_entity, player_transform, player_collider, mut health, invincible)) =
-        player_query.player.single_mut()
-    else {
-        return;
-    };
-
-    let player_position = player_transform.translation;
-    let player_size = player_collider.size;
-    let (bx, by) = cache.enemy_bullet_grid.cell_coords(player_position);
-
-    if invincible.is_some() {
-        for x in (bx - R_PLAYER_BULLET)..=(bx + R_PLAYER_BULLET) {
-            for y in (by - R_PLAYER_BULLET)..=(by + R_PLAYER_BULLET) {
-                let Some(entries) = cache.enemy_bullet_grid.get_cell(x, y) else {
-                    continue;
-                };
-
-                for &(bullet_entity, bullet_position, bullet_size) in entries {
-                    if collide(player_position, player_size, bullet_position, bullet_size) {
-                        frame.push(CombatOutcome::Despawn(bullet_entity));
-                    }
-                }
-            }
-        }
-
-        return;
-    }
-
-    if frame.player_damage_resolved {
-        return;
-    }
-
-    for x in (bx - R_PLAYER_BULLET)..=(bx + R_PLAYER_BULLET) {
-        for y in (by - R_PLAYER_BULLET)..=(by + R_PLAYER_BULLET) {
+    for x in (bullet_x - R_PLAYER_BULLET)..=(bullet_x + R_PLAYER_BULLET) {
+        for y in (bullet_y - R_PLAYER_BULLET)..=(bullet_y + R_PLAYER_BULLET) {
             let Some(entries) = cache.enemy_bullet_grid.get_cell(x, y) else {
                 continue;
             };
 
             for &(bullet_entity, bullet_position, bullet_size) in entries {
-                if !collide(player_position, player_size, bullet_position, bullet_size) {
+                if !player_collider.intersects(
+                    player_position,
+                    Collider { size: bullet_size },
+                    bullet_position,
+                ) {
                     continue;
                 }
 
-                health.current = health.current.saturating_sub(1);
-                frame.player_damage_resolved = true;
-                frame.push(CombatOutcome::PlayerDamaged {
+                let defeated = health.damage(1);
+                combat.write(CombatMessage::PlayerDamaged {
                     player: player_entity,
-                    defeated: health.current == 0,
+                    defeated,
                     consumed: bullet_entity,
                 });
-                frame.add_shake(
-                    if health.current == 0 { 20.0 } else { 14.0 },
-                    if health.current == 0 { 0.3 } else { 0.15 },
-                );
                 return;
             }
         }
@@ -552,78 +498,75 @@ fn apply_combat_outcomes(
     mut commands: Commands,
     mut score: ResMut<Score>,
     mut next_state: ResMut<NextState<GameState>>,
-    mut frame: ResMut<CombatFrame>,
+    mut reader: MessageReader<CombatMessage>,
     mut shake: MessageWriter<ShakeEvent>,
+    mut player_statuses: Query<&mut PlayerStatus>,
 ) {
-    for outcome in frame.outcomes.drain(..) {
+    let mut despawned = EntityHashSet::default();
+    let mut shake_magnitude: f32 = 0.0;
+    let mut shake_duration: f32 = 0.0;
+
+    for outcome in reader.read().copied() {
         match outcome {
-            CombatOutcome::Despawn(entity) => {
-                commands.entity(entity).despawn();
+            CombatMessage::Despawn(entity) => {
+                despawn_once(&mut commands, &mut despawned, entity);
             }
-            CombatOutcome::EnemyHit(entity) => {
+            CombatMessage::EnemyHit(entity) => {
                 commands.entity(entity).insert(EnemyHitFlash::new());
+                shake_magnitude = shake_magnitude.max(2.0);
+                shake_duration = shake_duration.max(0.03);
             }
-            CombatOutcome::EnemyDestroyed {
+            CombatMessage::EnemyDestroyed {
                 entity,
                 position,
                 score: points,
                 drop,
             } => {
-                commands.entity(entity).despawn();
+                despawn_once(&mut commands, &mut despawned, entity);
                 effects::spawn_explosion(&mut commands, position);
                 score.0 += points;
 
-                if let Some(power_up) = drop {
-                    spawn_powerup(&mut commands, position, power_up);
+                if let Some(kind) = drop {
+                    powerup::spawn_pickup(&mut commands, position, kind);
                 }
+
+                shake_magnitude = shake_magnitude.max(4.0);
+                shake_duration = shake_duration.max(0.06);
             }
-            CombatOutcome::PlayerDamaged {
+            CombatMessage::PlayerDamaged {
                 player,
                 defeated,
                 consumed,
             } => {
-                commands.entity(consumed).despawn();
+                despawn_once(&mut commands, &mut despawned, consumed);
+
                 if defeated {
                     next_state.set(GameState::GameOver);
+                    shake_magnitude = shake_magnitude.max(20.0);
+                    shake_duration = shake_duration.max(0.3);
                 } else {
-                    commands.entity(player).insert(Invincible::new());
+                    if let Ok(mut status) = player_statuses.get_mut(player) {
+                        status.grant_invincibility(INVINCIBILITY_SECONDS);
+                    }
+                    shake_magnitude = shake_magnitude.max(14.0);
+                    shake_duration = shake_duration.max(0.15);
                 }
             }
         }
     }
 
-    if frame.shake_magnitude > 0.0 && frame.shake_duration > 0.0 {
+    if shake_magnitude > 0.0 && shake_duration > 0.0 {
         shake.write(ShakeEvent {
-            magnitude: frame.shake_magnitude,
-            duration: frame.shake_duration,
+            magnitude: shake_magnitude,
+            duration: shake_duration,
         });
     }
 }
 
-fn despawn_expired(
-    mut commands: Commands,
-    time: Res<Time>,
-    mut query: Query<(Entity, &mut super::shared::Lifetime)>,
-) {
-    for (entity, mut lifetime) in &mut query {
-        lifetime.0.tick(time.delta());
-        if lifetime.0.is_finished() {
-            commands.entity(entity).despawn();
-        }
+fn despawn_once(commands: &mut Commands, despawned: &mut EntityHashSet, entity: Entity) {
+    if despawned.insert(entity) {
+        commands.entity(entity).despawn();
     }
-}
-
-fn roll_powerup_drop() -> Option<PowerUpType> {
-    if fastrand::f32() >= POWERUP_DROP_RATE {
-        return None;
-    }
-
-    Some(match fastrand::u32(0..4) {
-        0 => PowerUpType::TripleShot,
-        1 => PowerUpType::RapidFire,
-        2 => PowerUpType::PierceShot,
-        _ => PowerUpType::Shield,
-    })
 }
 
 fn required_neighbor_radius(max_a: f32, scale_a: f32, max_b: f32, scale_b: f32) -> i32 {

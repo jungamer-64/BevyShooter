@@ -1,10 +1,9 @@
 use bevy::prelude::*;
-use core::fmt::Write as _;
 use std::time::Duration;
 
 use super::GameplaySet;
-use super::player::{PierceShot, Player, RapidFire, TripleShot};
-use super::shared::{GameEntity, Health, Score};
+use super::core::{Health, InGameEntity, Score};
+use super::player::{PLAYER_MAX_HP, Player, PlayerStatus, PlayerWeapons};
 use super::state::{GameState, PlayState};
 
 const SCORE_FONT_SIZE: f32 = 30.0;
@@ -52,18 +51,8 @@ impl TextBlockBundle {
     }
 }
 
-type PowerUpTextQuery<'w, 's> =
-    Query<'w, 's, &'static mut Text, (With<PowerUpText>, Without<ScoreText>, Without<HpText>)>;
-type PlayerPowerUpQuery<'w, 's> = Query<
-    'w,
-    's,
-    (
-        Option<&'static TripleShot>,
-        Option<&'static RapidFire>,
-        Option<&'static PierceShot>,
-    ),
-    With<Player>,
->;
+type PlayerHudQuery<'w, 's> =
+    Query<'w, 's, (&'static PlayerWeapons, &'static PlayerStatus), With<Player>>;
 
 pub struct UiPlugin;
 
@@ -165,12 +154,12 @@ fn setup_hud(mut commands: Commands) {
             },
         ),
         ScoreText,
-        GameEntity,
+        InGameEntity,
     ));
 
     commands.spawn((
         TextBlockBundle::new(
-            hp_label(super::player::PLAYER_MAX_HP),
+            hp_label(PLAYER_MAX_HP),
             SCORE_FONT_SIZE,
             Color::srgb(0.2, 1.0, 0.2),
             Node {
@@ -181,7 +170,7 @@ fn setup_hud(mut commands: Commands) {
             },
         ),
         HpText,
-        GameEntity,
+        InGameEntity,
     ));
 
     commands.spawn((
@@ -197,7 +186,7 @@ fn setup_hud(mut commands: Commands) {
             },
         ),
         PowerUpText,
-        GameEntity,
+        InGameEntity,
     ));
 }
 
@@ -210,8 +199,7 @@ fn update_score_text(score: Res<Score>, mut query: Query<&mut Text, With<ScoreTe
         return;
     };
 
-    text.0.clear();
-    let _ = write!(text.0, "{}", score_label(score.0));
+    text.0 = score_label(score.0);
 }
 
 fn update_hp_text(
@@ -230,14 +218,13 @@ fn update_hp_text(
         return;
     };
 
-    text.0.clear();
-    let _ = write!(text.0, "{}", hp_label(health.current));
+    text.0 = hp_label(health.current);
 }
 
 fn update_powerup_ui(
     time: Res<Time>,
-    player_query: PlayerPowerUpQuery,
-    mut text_query: PowerUpTextQuery,
+    player_query: PlayerHudQuery,
+    mut text_query: Query<&mut Text, With<PowerUpText>>,
     mut ui_timer: Local<Timer>,
 ) {
     if ui_timer.duration() == Duration::ZERO {
@@ -249,7 +236,7 @@ fn update_powerup_ui(
         return;
     }
 
-    let Ok((triple, rapid, pierce)) = player_query.single() else {
+    let Ok((weapons, status)) = player_query.single() else {
         return;
     };
     let Ok(mut text) = text_query.single_mut() else {
@@ -263,19 +250,25 @@ fn update_powerup_ui(
         &mut text.0,
         &mut first_line,
         "TRIPLE",
-        triple.map(TripleShot::remaining_secs),
+        weapons.remaining_triple_shot(),
     );
     append_effect_line(
         &mut text.0,
         &mut first_line,
         "RAPID",
-        rapid.map(RapidFire::remaining_secs),
+        weapons.remaining_rapid_fire(),
     );
     append_effect_line(
         &mut text.0,
         &mut first_line,
         "PIERCE",
-        pierce.map(PierceShot::remaining_secs),
+        weapons.remaining_pierce_shot(),
+    );
+    append_effect_line(
+        &mut text.0,
+        &mut first_line,
+        "INVINCIBLE",
+        status.remaining_invincibility(),
     );
 }
 
@@ -297,7 +290,7 @@ fn append_effect_line(
         buffer.push('\n');
     }
 
-    let _ = write!(buffer, "{}: {:.1}s", label, remaining);
+    buffer.push_str(&format!("{label}: {remaining:.1}s"));
     *first_line = false;
 }
 

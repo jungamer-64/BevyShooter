@@ -1,7 +1,7 @@
 use bevy::prelude::*;
 
+use super::core::{InGameEntity, Score};
 use super::effects;
-use super::shared::{GameEntity, Score};
 use super::ui;
 
 #[derive(Debug, Clone, Copy, Default, Eq, PartialEq, Hash, States)]
@@ -31,7 +31,7 @@ impl Plugin for StatePlugin {
             .add_systems(OnEnter(GameState::InGame), enter_game)
             .add_systems(
                 OnExit(GameState::InGame),
-                (cleanup_game_entities, effects::reset_camera_shake),
+                (cleanup_in_game_entities, effects::reset_camera_shake),
             )
             .add_systems(Update, pause_input.run_if(in_state(GameState::InGame)))
             .add_systems(
@@ -50,7 +50,7 @@ fn enter_game(mut score: ResMut<Score>, mut next_play_state: ResMut<NextState<Pl
     next_play_state.set(PlayState::Playing);
 }
 
-fn cleanup_game_entities(mut commands: Commands, query: Query<Entity, With<GameEntity>>) {
+fn cleanup_in_game_entities(mut commands: Commands, query: Query<Entity, With<InGameEntity>>) {
     for entity in &query {
         commands.entity(entity).despawn();
     }

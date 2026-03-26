@@ -1,14 +1,14 @@
 use bevy::prelude::*;
 
 use super::GameplaySet;
-use super::player::Invincible;
-use super::shared::{GameEntity, MainCamera, Velocity, frand_range, layer};
+use super::core::{InGameEntity, Lifetime, MainCamera, Velocity, frand_range, layer};
+use super::player::{Player, PlayerStatus};
 use super::state::{GameState, PlayState};
 
 const EXPLOSION_DURATION: f32 = 0.5;
 
 #[derive(Component)]
-struct Explosion(pub Timer);
+struct ExplosionParticle;
 
 #[derive(Component)]
 pub(crate) struct CameraShake {
@@ -27,8 +27,9 @@ struct ExplosionParticleBundle {
     sprite: Sprite,
     transform: Transform,
     velocity: Velocity,
-    explosion: Explosion,
-    cleanup: GameEntity,
+    lifetime: Lifetime,
+    particle: ExplosionParticle,
+    cleanup: InGameEntity,
 }
 
 impl ExplosionParticleBundle {
@@ -37,8 +38,9 @@ impl ExplosionParticleBundle {
             sprite: Sprite::from_color(color, Vec2::splat(size)),
             transform: Transform::from_xyz(position.x, position.y, layer::FX),
             velocity: Velocity(velocity),
-            explosion: Explosion(Timer::from_seconds(EXPLOSION_DURATION, TimerMode::Once)),
-            cleanup: GameEntity,
+            lifetime: Lifetime(Timer::from_seconds(EXPLOSION_DURATION, TimerMode::Once)),
+            particle: ExplosionParticle,
+            cleanup: InGameEntity,
         }
     }
 }
@@ -52,8 +54,8 @@ impl Plugin for EffectsPlugin {
             (
                 start_camera_shake,
                 apply_camera_shake,
-                update_explosions,
-                update_invincibility,
+                fade_explosions,
+                update_invincibility_visuals,
             )
                 .chain()
                 .in_set(GameplaySet::Fx)
@@ -152,40 +154,27 @@ pub fn reset_camera_shake(
     }
 }
 
-fn update_explosions(
-    mut commands: Commands,
-    time: Res<Time>,
-    mut query: Query<(
-        Entity,
-        &mut Transform,
-        &Velocity,
-        &mut Explosion,
-        &mut Sprite,
-    )>,
-) {
-    for (entity, mut transform, velocity, mut explosion, mut sprite) in &mut query {
-        transform.translation.x += velocity.0.x * time.delta_secs();
-        transform.translation.y += velocity.0.y * time.delta_secs();
-
-        explosion.0.tick(time.delta());
-        let alpha = (1.0 - explosion.0.elapsed_secs() / EXPLOSION_DURATION).clamp(0.0, 1.0);
+fn fade_explosions(mut query: Query<(&Lifetime, &mut Sprite), With<ExplosionParticle>>) {
+    for (lifetime, mut sprite) in &mut query {
+        let duration = lifetime.0.duration().as_secs_f32().max(0.0001);
+        let alpha = (1.0 - lifetime.0.elapsed_secs() / duration).clamp(0.0, 1.0);
         sprite.color = sprite.color.with_alpha(alpha);
-
-        if explosion.0.is_finished() {
-            commands.entity(entity).despawn();
-        }
     }
 }
 
-fn update_invincibility(
-    mut commands: Commands,
+fn update_invincibility_visuals(
     time: Res<Time>,
-    mut query: Query<(Entity, &mut Invincible, &mut Sprite)>,
+    mut query: Query<(&mut PlayerStatus, &mut Sprite), With<Player>>,
 ) {
-    for (entity, mut invincible, mut sprite) in &mut query {
-        invincible.0.tick(time.delta());
+    for (mut status, mut sprite) in &mut query {
+        let Some(timer) = status.invincible.as_mut() else {
+            sprite.color = Color::WHITE;
+            continue;
+        };
 
-        let elapsed = invincible.0.elapsed_secs();
+        timer.tick(time.delta());
+
+        let elapsed = timer.elapsed_secs();
         let visible = (elapsed * 10.0) as i32 % 2 == 0;
         sprite.color = if visible {
             Color::WHITE
@@ -193,9 +182,9 @@ fn update_invincibility(
             Color::srgba(1.0, 1.0, 1.0, 0.3)
         };
 
-        if invincible.0.is_finished() {
+        if timer.is_finished() {
+            status.invincible = None;
             sprite.color = Color::WHITE;
-            commands.entity(entity).remove::<Invincible>();
         }
     }
 }

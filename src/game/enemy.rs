@@ -1,13 +1,14 @@
 use bevy::prelude::*;
 use std::time::Duration;
 
-use super::GameplaySet;
 use super::assets::GameAssets;
-use super::player::Player;
-use super::shared::{
-    Collider, GameBounds, GameEntity, Lifetime, Velocity, capped_delta_seconds, frand_range, layer,
+use super::core::{
+    Collider, GameBounds, Health, InGameEntity, Lifetime, OffscreenDespawn, Velocity, frand_range,
+    layer,
 };
+use super::player::Player;
 use super::state::{GameState, PlayState};
+use super::{GameplaySet, SimulationSet};
 
 const ENEMY_SPEED: f32 = 300.0;
 const ENEMY_BULLET_SPEED: f32 = 400.0;
@@ -55,18 +56,6 @@ impl EnemyType {
 pub struct ZigzagPhase(pub f32);
 
 #[derive(Component)]
-pub struct EnemyHealth {
-    pub current: u32,
-    pub max: u32,
-}
-
-impl EnemyHealth {
-    pub fn new(max: u32) -> Self {
-        Self { current: max, max }
-    }
-}
-
-#[derive(Component)]
 pub struct EnemyHitFlash(pub Timer);
 
 impl EnemyHitFlash {
@@ -93,32 +82,24 @@ impl Default for SpawnState {
     }
 }
 
-#[derive(Resource)]
+#[derive(Resource, Default)]
 pub struct Difficulty {
     pub level: u32,
     pub elapsed_time: f32,
-}
-
-impl Default for Difficulty {
-    fn default() -> Self {
-        Self {
-            level: 0,
-            elapsed_time: 0.0,
-        }
-    }
 }
 
 #[derive(Bundle)]
 struct EnemyBundle {
     enemy: Enemy,
     enemy_type: EnemyType,
-    health: EnemyHealth,
+    health: Health,
     sprite: Sprite,
     transform: Transform,
     velocity: Velocity,
     collider: Collider,
     fire_timer: EnemyFireTimer,
-    cleanup: GameEntity,
+    offscreen: OffscreenDespawn,
+    cleanup: InGameEntity,
 }
 
 impl EnemyBundle {
@@ -132,7 +113,7 @@ impl EnemyBundle {
         Self {
             enemy: Enemy,
             enemy_type,
-            health: EnemyHealth::new(enemy_type.initial_hp()),
+            health: Health::new(enemy_type.initial_hp()),
             sprite: Sprite::from_image(game_assets.asteroid()),
             transform: Transform::from_xyz(bounds.spawn_x(), y, layer::ENEMY)
                 .with_scale(Vec3::splat(ENEMY_SCALE)),
@@ -147,7 +128,8 @@ impl EnemyBundle {
                 enemy_fire_interval_for_level(level),
                 TimerMode::Repeating,
             )),
-            cleanup: GameEntity,
+            offscreen: OffscreenDespawn::horizontal(120.0),
+            cleanup: InGameEntity,
         }
     }
 }
@@ -160,7 +142,8 @@ struct EnemyBulletBundle {
     velocity: Velocity,
     collider: Collider,
     lifetime: Lifetime,
-    cleanup: GameEntity,
+    offscreen: OffscreenDespawn,
+    cleanup: InGameEntity,
 }
 
 impl EnemyBulletBundle {
@@ -177,17 +160,17 @@ impl EnemyBulletBundle {
                 BULLET_LIFETIME_SECONDS,
                 TimerMode::Once,
             )),
-            cleanup: GameEntity,
+            offscreen: OffscreenDespawn::new(Vec2::splat(120.0)),
+            cleanup: InGameEntity,
         }
     }
 }
 
-type EnemyMovementQuery<'w, 's> = Query<
+type EnemyVelocityQuery<'w, 's> = Query<
     'w,
     's,
     (
-        Entity,
-        &'static mut Transform,
+        &'static Transform,
         &'static mut Velocity,
         &'static EnemyType,
         Option<&'static ZigzagPhase>,
@@ -200,7 +183,7 @@ type EnemyVisualQuery<'w, 's> = Query<
     's,
     (
         Entity,
-        Ref<'static, EnemyHealth>,
+        Ref<'static, Health>,
         Option<&'static mut EnemyHitFlash>,
         &'static mut Sprite,
     ),
@@ -216,16 +199,20 @@ impl Plugin for EnemyPlugin {
             .add_systems(OnEnter(GameState::InGame), reset_enemy_progress)
             .add_systems(
                 Update,
-                (update_difficulty, enemy_spawner, enemy_fire_system)
+                (
+                    update_difficulty,
+                    enemy_spawner,
+                    update_enemy_velocity,
+                    enemy_fire_system,
+                )
                     .chain()
-                    .in_set(GameplaySet::Spawn)
+                    .in_set(SimulationSet::Prepare)
                     .run_if(in_state(GameState::InGame).and(in_state(PlayState::Playing))),
             )
             .add_systems(
                 Update,
-                (enemy_bullet_movement, enemy_movement)
-                    .chain()
-                    .in_set(GameplaySet::Movement)
+                clamp_enemy_position
+                    .in_set(SimulationSet::PostMove)
                     .run_if(in_state(GameState::InGame).and(in_state(PlayState::Playing))),
             )
             .add_systems(
@@ -319,23 +306,21 @@ fn enemy_spawner(
     }
 }
 
-fn enemy_movement(
-    mut commands: Commands,
+fn update_enemy_velocity(
     time: Res<Time>,
-    bounds: Res<GameBounds>,
-    mut query: EnemyMovementQuery,
+    mut query: EnemyVelocityQuery,
     player_query: Query<&Transform, (With<Player>, Without<Enemy>)>,
 ) {
     let player_y = player_query
         .single()
         .map(|transform| transform.translation.y)
         .unwrap_or(0.0);
-    let (y_min, y_max) = bounds.player_y_range(20.0);
-    let dt = capped_delta_seconds(&time);
 
-    for (entity, mut transform, mut velocity, enemy_type, phase) in &mut query {
+    for (transform, mut velocity, enemy_type, phase) in &mut query {
         match enemy_type {
-            EnemyType::Normal => {}
+            EnemyType::Normal => {
+                velocity.0.y = 0.0;
+            }
             EnemyType::Zigzag => {
                 let offset = phase.map_or(0.0, |phase| phase.0);
                 velocity.0.y =
@@ -347,14 +332,14 @@ fn enemy_movement(
                 velocity.0.y = diff.clamp(-120.0, 120.0);
             }
         }
+    }
+}
 
-        transform.translation.x += velocity.0.x * dt;
-        transform.translation.y += velocity.0.y * dt;
+fn clamp_enemy_position(bounds: Res<GameBounds>, mut query: Query<&mut Transform, With<Enemy>>) {
+    let (y_min, y_max) = bounds.player_y_range(20.0);
+
+    for mut transform in &mut query {
         transform.translation.y = transform.translation.y.clamp(y_min, y_max);
-
-        if transform.translation.x < bounds.despawn_x() {
-            commands.entity(entity).despawn();
-        }
     }
 }
 
@@ -386,17 +371,6 @@ fn enemy_fire_system(
                 direction * ENEMY_BULLET_SPEED,
             ));
         }
-    }
-}
-
-fn enemy_bullet_movement(
-    time: Res<Time>,
-    mut query: Query<(&mut Transform, &Velocity), With<EnemyBullet>>,
-) {
-    let dt = capped_delta_seconds(&time);
-    for (mut transform, velocity) in &mut query {
-        transform.translation.x += velocity.0.x * dt;
-        transform.translation.y += velocity.0.y * dt;
     }
 }
 

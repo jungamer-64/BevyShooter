@@ -1,19 +1,20 @@
 #[cfg(target_arch = "wasm32")]
 use bevy::asset::AssetMetaCheck;
 use bevy::prelude::*;
-use bevy::window::{PrimaryWindow, WindowPlugin, WindowResized, WindowResolution};
+use bevy::window::{WindowPlugin, WindowResolution};
 
 pub mod assets;
 pub mod background;
 pub mod combat;
+pub mod core;
 pub mod effects;
 pub mod enemy;
 pub mod player;
-pub mod shared;
+pub mod powerup;
 pub mod state;
 pub mod ui;
 
-use shared::{GameBounds, MainCamera, Score};
+use core::MainCamera;
 
 pub fn run() {
     #[allow(unused_mut)]
@@ -51,30 +52,44 @@ pub struct GamePlugin;
 
 impl Plugin for GamePlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<GameBounds>()
-            .init_resource::<Score>()
-            .insert_resource(ClearColor(Color::srgb(0.02, 0.02, 0.05)))
+        app.insert_resource(ClearColor(Color::srgb(0.02, 0.02, 0.05)))
             .configure_sets(
                 Update,
                 (
                     GameplaySet::Input,
-                    GameplaySet::Spawn,
-                    GameplaySet::Movement,
-                    GameplaySet::Collision,
-                    GameplaySet::Cleanup,
+                    GameplaySet::Simulate,
+                    GameplaySet::Detect,
+                    GameplaySet::Resolve,
                     GameplaySet::Ui,
                     GameplaySet::Fx,
                 )
                     .chain(),
             )
-            .add_systems(Startup, (setup_camera, update_bounds).chain())
-            .add_systems(PreUpdate, update_bounds_from_resize)
+            .configure_sets(
+                Update,
+                (
+                    SimulationSet::Prepare,
+                    SimulationSet::Move,
+                    SimulationSet::PostMove,
+                )
+                    .chain()
+                    .in_set(GameplaySet::Simulate),
+            )
+            .configure_sets(
+                Update,
+                (ResolveSet::Apply, ResolveSet::Cleanup)
+                    .chain()
+                    .in_set(GameplaySet::Resolve),
+            )
+            .add_systems(Startup, setup_camera)
             .add_plugins((
+                core::GameCorePlugin,
                 state::StatePlugin,
                 assets::AssetsPlugin,
                 ui::UiPlugin,
                 background::BackgroundPlugin,
                 player::PlayerPlugin,
+                powerup::PowerUpPlugin,
                 enemy::EnemyPlugin,
                 combat::CombatPlugin,
                 effects::EffectsPlugin,
@@ -85,43 +100,39 @@ impl Plugin for GamePlugin {
 #[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum GameplaySet {
     Input,
-    Spawn,
-    Movement,
-    Collision,
-    Cleanup,
+    Simulate,
+    Detect,
+    Resolve,
     Ui,
     Fx,
+}
+
+#[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SimulationSet {
+    Prepare,
+    Move,
+    PostMove,
+}
+
+#[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ResolveSet {
+    Apply,
+    Cleanup,
 }
 
 fn setup_camera(mut commands: Commands) {
     commands.spawn((Camera2d, MainCamera::default()));
 }
 
-fn update_bounds(windows: Query<&Window, With<PrimaryWindow>>, mut bounds: ResMut<GameBounds>) {
-    let Ok(window) = windows.single() else {
-        return;
-    };
-
-    bounds.half_width = window.width() * 0.5;
-    bounds.half_height = window.height() * 0.5;
-}
-
-fn update_bounds_from_resize(
-    mut reader: MessageReader<WindowResized>,
-    mut bounds: ResMut<GameBounds>,
-) {
-    for event in reader.read() {
-        bounds.half_width = event.width * 0.5;
-        bounds.half_height = event.height * 0.5;
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::game::assets::GameAssets;
+    use crate::game::combat::CombatMessage;
+    use crate::game::core::{GameBounds, Score};
     use crate::game::enemy::{Difficulty, SpawnState};
     use crate::game::state::{GameState, PlayState};
+    use bevy::ecs::message::Messages;
 
     #[test]
     fn game_plugin_registers_core_resources_and_states() {
@@ -136,5 +147,6 @@ mod tests {
         assert!(app.world().contains_resource::<GameAssets>());
         assert!(app.world().contains_resource::<SpawnState>());
         assert!(app.world().contains_resource::<Difficulty>());
+        assert!(app.world().contains_resource::<Messages<CombatMessage>>());
     }
 }

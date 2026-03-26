@@ -1,6 +1,6 @@
 use bevy::prelude::*;
 
-use super::shared::{GameBounds, capped_delta_seconds, frand_range, layer};
+use super::core::{GameBounds, capped_delta_seconds, frand_range, layer};
 use super::state::{GameState, PlayState};
 
 const STAR_COUNT: usize = 50;
@@ -65,6 +65,7 @@ fn update_stars(
     mut query: Query<(&mut Transform, &Star)>,
 ) {
     let dt = capped_delta_seconds(&time);
+
     for (mut transform, star) in &mut query {
         transform.translation.x -= star.speed * dt;
 

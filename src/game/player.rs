@@ -4,9 +4,9 @@ use std::time::Duration;
 use super::GameplaySet;
 use super::assets::GameAssets;
 use super::combat::{HitList, Pierce};
-use super::shared::{
-    Collider, GameBounds, GameEntity, Health, Lifetime, Velocity, capped_delta_seconds, layer,
-    ready_once_timer,
+use super::core::{
+    Collider, GameBounds, Health, InGameEntity, Lifetime, OffscreenDespawn, Velocity,
+    capped_delta_seconds, layer, ready_once_timer, remaining_timer_secs,
 };
 use super::state::{GameState, PlayState};
 
@@ -14,12 +14,10 @@ const PLAYER_SPEED: f32 = 500.0;
 const BULLET_SPEED: f32 = 800.0;
 const FIRE_COOLDOWN_SECONDS: f32 = 0.2;
 const BULLET_LIFETIME_SECONDS: f32 = 3.0;
-const POWERUP_SPEED: f32 = 100.0;
-const POWERUP_TRIPLE_DURATION: f32 = 10.0;
-const POWERUP_RAPID_DURATION: f32 = 8.0;
-const POWERUP_PIERCE_DURATION: f32 = 12.0;
 const RAPID_FIRE_BONUS: f32 = 0.4;
-const POWERUP_SIZE: Vec2 = Vec2::new(20.0, 20.0);
+const PIERCE_SHOT_CHARGES: u32 = 2;
+const SPREAD_SHOT_ANGLES: [f32; 3] = [0.0, 15.0_f32.to_radians(), -15.0_f32.to_radians()];
+const SINGLE_SHOT_ANGLES: [f32; 1] = [0.0];
 
 pub const PLAYER_MAX_HP: u32 = 3;
 pub(crate) const PLAYER_SIZE: Vec2 = Vec2::new(30.0, 30.0);
@@ -35,77 +33,130 @@ pub struct Player;
 pub struct Bullet;
 
 #[derive(Component)]
-pub struct FireCooldown(pub Timer);
+pub struct PlayerWeapons {
+    pub fire_cooldown: Timer,
+    pub triple_shot: Option<Timer>,
+    pub rapid_fire: Option<Timer>,
+    pub pierce_shot: Option<Timer>,
+}
+
+impl Default for PlayerWeapons {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl PlayerWeapons {
+    pub fn new() -> Self {
+        Self {
+            fire_cooldown: ready_once_timer(FIRE_COOLDOWN_SECONDS),
+            triple_shot: None,
+            rapid_fire: None,
+            pierce_shot: None,
+        }
+    }
+
+    pub fn tick(&mut self, delta: Duration) -> WeaponExpiry {
+        self.fire_cooldown.tick(delta);
+
+        WeaponExpiry {
+            triple_shot: tick_effect(&mut self.triple_shot, delta),
+            rapid_fire: tick_effect(&mut self.rapid_fire, delta),
+            pierce_shot: tick_effect(&mut self.pierce_shot, delta),
+        }
+    }
+
+    pub fn ready_to_fire(&self) -> bool {
+        self.fire_cooldown.is_finished()
+    }
+
+    pub fn fire_angles(&self) -> &'static [f32] {
+        if self.triple_shot.is_some() {
+            &SPREAD_SHOT_ANGLES
+        } else {
+            &SINGLE_SHOT_ANGLES
+        }
+    }
+
+    pub fn has_pierce_shot(&self) -> bool {
+        self.pierce_shot.is_some()
+    }
+
+    pub fn reset_fire_cooldown(&mut self) {
+        let bonus = if self.rapid_fire.is_some() {
+            RAPID_FIRE_BONUS
+        } else {
+            0.0
+        };
+        let cooldown = FIRE_COOLDOWN_SECONDS * (1.0 - bonus.clamp(0.0, 0.9));
+
+        self.fire_cooldown
+            .set_duration(Duration::from_secs_f32(cooldown));
+        self.fire_cooldown.reset();
+    }
+
+    pub fn activate_triple_shot(&mut self, seconds: f32) {
+        self.triple_shot = Some(Timer::from_seconds(seconds, TimerMode::Once));
+    }
+
+    pub fn activate_rapid_fire(&mut self, seconds: f32) {
+        self.rapid_fire = Some(Timer::from_seconds(seconds, TimerMode::Once));
+    }
+
+    pub fn activate_pierce_shot(&mut self, seconds: f32) {
+        self.pierce_shot = Some(Timer::from_seconds(seconds, TimerMode::Once));
+    }
+
+    pub fn remaining_triple_shot(&self) -> Option<f32> {
+        self.triple_shot
+            .as_ref()
+            .map(remaining_timer_secs)
+            .filter(|remaining| *remaining > 0.0)
+    }
+
+    pub fn remaining_rapid_fire(&self) -> Option<f32> {
+        self.rapid_fire
+            .as_ref()
+            .map(remaining_timer_secs)
+            .filter(|remaining| *remaining > 0.0)
+    }
+
+    pub fn remaining_pierce_shot(&self) -> Option<f32> {
+        self.pierce_shot
+            .as_ref()
+            .map(remaining_timer_secs)
+            .filter(|remaining| *remaining > 0.0)
+    }
+}
+
+#[derive(Default)]
+pub struct WeaponExpiry {
+    pub triple_shot: bool,
+    pub rapid_fire: bool,
+    pub pierce_shot: bool,
+}
 
 #[derive(Component, Default)]
-pub struct PlayerStats {
-    pub weapon_level: u32,
+pub struct PlayerStatus {
+    pub invincible: Option<Timer>,
 }
 
-#[derive(Component)]
-pub struct TripleShot(pub Timer);
-
-impl TripleShot {
-    pub fn new() -> Self {
-        Self(Timer::from_seconds(
-            POWERUP_TRIPLE_DURATION,
-            TimerMode::Once,
-        ))
+impl PlayerStatus {
+    pub fn is_invincible(&self) -> bool {
+        self.invincible.is_some()
     }
 
-    pub fn remaining_secs(&self) -> f32 {
-        (self.0.duration().as_secs_f32() - self.0.elapsed_secs()).max(0.0)
-    }
-}
-
-#[derive(Component)]
-pub struct RapidFire(pub Timer);
-
-impl RapidFire {
-    pub fn new() -> Self {
-        Self(Timer::from_seconds(POWERUP_RAPID_DURATION, TimerMode::Once))
+    pub fn grant_invincibility(&mut self, seconds: f32) {
+        self.invincible = Some(Timer::from_seconds(seconds, TimerMode::Once));
     }
 
-    pub fn remaining_secs(&self) -> f32 {
-        (self.0.duration().as_secs_f32() - self.0.elapsed_secs()).max(0.0)
+    pub fn remaining_invincibility(&self) -> Option<f32> {
+        self.invincible
+            .as_ref()
+            .map(remaining_timer_secs)
+            .filter(|remaining| *remaining > 0.0)
     }
 }
-
-#[derive(Component)]
-pub struct PierceShot(pub Timer);
-
-impl PierceShot {
-    pub fn new() -> Self {
-        Self(Timer::from_seconds(
-            POWERUP_PIERCE_DURATION,
-            TimerMode::Once,
-        ))
-    }
-
-    pub fn remaining_secs(&self) -> f32 {
-        (self.0.duration().as_secs_f32() - self.0.elapsed_secs()).max(0.0)
-    }
-}
-
-#[derive(Component)]
-pub struct Invincible(pub Timer);
-
-impl Invincible {
-    pub fn new() -> Self {
-        Self(Timer::from_seconds(INVINCIBILITY_SECONDS, TimerMode::Once))
-    }
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum PowerUpType {
-    TripleShot,
-    RapidFire,
-    Shield,
-    PierceShot,
-}
-
-#[derive(Component)]
-pub struct PowerUpItem(pub PowerUpType);
 
 #[derive(Bundle)]
 struct PlayerBundle {
@@ -114,9 +165,9 @@ struct PlayerBundle {
     transform: Transform,
     collider: Collider,
     health: Health,
-    cooldown: FireCooldown,
-    stats: PlayerStats,
-    cleanup: GameEntity,
+    weapons: PlayerWeapons,
+    status: PlayerStatus,
+    cleanup: InGameEntity,
 }
 
 impl PlayerBundle {
@@ -129,13 +180,10 @@ impl PlayerBundle {
             collider: Collider {
                 size: PLAYER_SIZE * PLAYER_SCALE,
             },
-            health: Health {
-                current: PLAYER_MAX_HP,
-                max: PLAYER_MAX_HP,
-            },
-            cooldown: FireCooldown(ready_once_timer(FIRE_COOLDOWN_SECONDS)),
-            stats: PlayerStats::default(),
-            cleanup: GameEntity,
+            health: Health::new(PLAYER_MAX_HP),
+            weapons: PlayerWeapons::new(),
+            status: PlayerStatus::default(),
+            cleanup: InGameEntity,
         }
     }
 }
@@ -148,7 +196,8 @@ struct BulletBundle {
     velocity: Velocity,
     collider: Collider,
     lifetime: Lifetime,
-    cleanup: GameEntity,
+    offscreen: OffscreenDespawn,
+    cleanup: InGameEntity,
 }
 
 impl BulletBundle {
@@ -166,54 +215,14 @@ impl BulletBundle {
                 BULLET_LIFETIME_SECONDS,
                 TimerMode::Once,
             )),
-            cleanup: GameEntity,
+            offscreen: OffscreenDespawn::new(Vec2::splat(120.0)),
+            cleanup: InGameEntity,
         }
     }
 }
 
-#[derive(Bundle)]
-struct PowerUpBundle {
-    item: PowerUpItem,
-    sprite: Sprite,
-    transform: Transform,
-    velocity: Velocity,
-    collider: Collider,
-    cleanup: GameEntity,
-}
-
-impl PowerUpBundle {
-    fn new(position: Vec3, power_type: PowerUpType) -> Self {
-        let color = match power_type {
-            PowerUpType::TripleShot => Color::srgb(0.2, 0.6, 1.0),
-            PowerUpType::RapidFire => Color::srgb(1.0, 1.0, 0.2),
-            PowerUpType::PierceShot => Color::srgb(0.8, 0.2, 1.0),
-            PowerUpType::Shield => Color::srgb(0.2, 1.0, 0.2),
-        };
-
-        Self {
-            item: PowerUpItem(power_type),
-            sprite: Sprite::from_color(color, POWERUP_SIZE),
-            transform: Transform::from_xyz(position.x, position.y, layer::POWERUP),
-            velocity: Velocity(Vec2::new(-POWERUP_SPEED, 0.0)),
-            collider: Collider { size: POWERUP_SIZE },
-            cleanup: GameEntity,
-        }
-    }
-}
-
-type PlayerShootQuery<'w, 's> = Query<
-    'w,
-    's,
-    (
-        &'static Transform,
-        &'static mut FireCooldown,
-        &'static PlayerStats,
-        Option<&'static TripleShot>,
-        Option<&'static RapidFire>,
-        Option<&'static PierceShot>,
-    ),
-    With<Player>,
->;
+type PlayerShootQuery<'w, 's> =
+    Query<'w, 's, (&'static Transform, &'static mut PlayerWeapons), With<Player>>;
 
 pub struct PlayerPlugin;
 
@@ -222,39 +231,33 @@ impl Plugin for PlayerPlugin {
         app.add_systems(OnEnter(GameState::InGame), spawn_player)
             .add_systems(
                 Update,
-                (
-                    update_fire_cooldown,
-                    tick_triple_shot,
-                    tick_rapid_fire,
-                    tick_pierce_shot,
-                    player_movement,
-                )
+                (tick_player_weapons, player_movement, player_shoot)
                     .chain()
                     .in_set(GameplaySet::Input)
-                    .run_if(in_state(GameState::InGame).and(in_state(PlayState::Playing))),
-            )
-            .add_systems(
-                Update,
-                (powerup_movement, powerup_collection, player_shoot)
-                    .chain()
-                    .in_set(GameplaySet::Spawn)
-                    .run_if(in_state(GameState::InGame).and(in_state(PlayState::Playing))),
-            )
-            .add_systems(
-                Update,
-                bullet_movement
-                    .in_set(GameplaySet::Movement)
                     .run_if(in_state(GameState::InGame).and(in_state(PlayState::Playing))),
             );
     }
 }
 
-pub fn spawn_powerup(commands: &mut Commands, position: Vec3, power_type: PowerUpType) {
-    commands.spawn(PowerUpBundle::new(position, power_type));
-}
-
 fn spawn_player(mut commands: Commands, game_assets: Res<GameAssets>) {
     commands.spawn(PlayerBundle::new(&game_assets));
+}
+
+fn tick_player_weapons(time: Res<Time>, mut query: Query<&mut PlayerWeapons, With<Player>>) {
+    let Ok(mut weapons) = query.single_mut() else {
+        return;
+    };
+
+    let expired = weapons.tick(time.delta());
+    if expired.triple_shot {
+        crate::dlog!("Triple Shot expired!");
+    }
+    if expired.rapid_fire {
+        crate::dlog!("Rapid Fire expired!");
+    }
+    if expired.pierce_shot {
+        crate::dlog!("Pierce Shot expired!");
+    }
 }
 
 fn player_movement(
@@ -285,70 +288,14 @@ fn player_movement(
         direction = direction.normalize();
     }
 
+    let dt = capped_delta_seconds(&time);
     let (x_min, x_max) = bounds.player_x_range(20.0);
     let (y_min, y_max) = bounds.player_y_range(20.0);
 
-    transform.translation.x = (transform.translation.x
-        + direction.x * PLAYER_SPEED * time.delta_secs())
-    .clamp(x_min, x_max);
-    transform.translation.y = (transform.translation.y
-        + direction.y * PLAYER_SPEED * time.delta_secs())
-    .clamp(y_min, y_max);
-}
-
-fn update_fire_cooldown(time: Res<Time>, mut query: Query<&mut FireCooldown>) {
-    for mut cooldown in &mut query {
-        cooldown.0.tick(time.delta());
-    }
-}
-
-fn tick_triple_shot(
-    mut commands: Commands,
-    time: Res<Time>,
-    mut query: Query<(Entity, &mut PlayerStats, &mut TripleShot), With<Player>>,
-) {
-    let Ok((entity, mut stats, mut effect)) = query.single_mut() else {
-        return;
-    };
-
-    effect.0.tick(time.delta());
-    if effect.0.is_finished() {
-        stats.weapon_level = 0;
-        commands.entity(entity).remove::<TripleShot>();
-        crate::dlog!("Triple Shot expired!");
-    }
-}
-
-fn tick_rapid_fire(
-    mut commands: Commands,
-    time: Res<Time>,
-    mut query: Query<(Entity, &mut RapidFire), With<Player>>,
-) {
-    let Ok((entity, mut effect)) = query.single_mut() else {
-        return;
-    };
-
-    effect.0.tick(time.delta());
-    if effect.0.is_finished() {
-        commands.entity(entity).remove::<RapidFire>();
-        crate::dlog!("Rapid Fire expired!");
-    }
-}
-
-fn tick_pierce_shot(
-    mut commands: Commands,
-    time: Res<Time>,
-    mut query: Query<(Entity, &mut PierceShot), With<Player>>,
-) {
-    let Ok((entity, mut effect)) = query.single_mut() else {
-        return;
-    };
-
-    effect.0.tick(time.delta());
-    if effect.0.is_finished() {
-        commands.entity(entity).remove::<PierceShot>();
-        crate::dlog!("Pierce Shot expired!");
-    }
+    transform.translation.x =
+        (transform.translation.x + direction.x * PLAYER_SPEED * dt).clamp(x_min, x_max);
+    transform.translation.y =
+        (transform.translation.y + direction.y * PLAYER_SPEED * dt).clamp(y_min, y_max);
 }
 
 fn player_shoot(
@@ -357,117 +304,73 @@ fn player_shoot(
     mut query: PlayerShootQuery,
     game_assets: Res<GameAssets>,
 ) {
-    let Ok((player_transform, mut cooldown, stats, triple, rapid, pierce_effect)) =
-        query.single_mut()
-    else {
+    let Ok((player_transform, mut weapons)) = query.single_mut() else {
         return;
     };
 
-    if !keyboard_input.pressed(KeyCode::Space) || !cooldown.0.is_finished() {
+    if !keyboard_input.pressed(KeyCode::Space) || !weapons.ready_to_fire() {
         return;
     }
 
-    let mut angles = [0.0_f32; 3];
-    let spread_active = stats.weapon_level > 0 || triple.is_some();
-    let shot_count = if spread_active {
-        angles[1] = 15.0_f32.to_radians();
-        angles[2] = -15.0_f32.to_radians();
-        3
-    } else {
-        1
-    };
-
-    for &angle in &angles[..shot_count] {
+    for &angle in weapons.fire_angles() {
         let velocity = Vec2::new(angle.cos(), angle.sin()) * BULLET_SPEED;
-        let position = player_transform.translation;
-        let mut bullet = commands.spawn(BulletBundle::new(&game_assets, position, velocity));
+        let mut bullet = commands.spawn(BulletBundle::new(
+            &game_assets,
+            player_transform.translation,
+            velocity,
+        ));
 
-        if pierce_effect.is_some() {
-            bullet.insert((Pierce(2), HitList::default()));
+        if weapons.has_pierce_shot() {
+            bullet.insert((Pierce(PIERCE_SHOT_CHARGES), HitList::default()));
         }
     }
 
-    let bonus = if rapid.is_some() {
-        RAPID_FIRE_BONUS
+    weapons.reset_fire_cooldown();
+}
+
+fn tick_effect(timer: &mut Option<Timer>, delta: Duration) -> bool {
+    let Some(effect) = timer.as_mut() else {
+        return false;
+    };
+
+    effect.tick(delta);
+    if effect.is_finished() {
+        *timer = None;
+        true
     } else {
-        0.0
-    };
-    let actual_cooldown = FIRE_COOLDOWN_SECONDS * (1.0 - bonus.clamp(0.0, 0.9));
-    cooldown
-        .0
-        .set_duration(Duration::from_secs_f32(actual_cooldown));
-    cooldown.0.reset();
-}
-
-fn bullet_movement(time: Res<Time>, mut query: Query<(&mut Transform, &Velocity), With<Bullet>>) {
-    let dt = capped_delta_seconds(&time);
-    for (mut transform, velocity) in &mut query {
-        transform.translation.x += velocity.0.x * dt;
-        transform.translation.y += velocity.0.y * dt;
+        false
     }
 }
 
-fn powerup_movement(
-    mut commands: Commands,
-    time: Res<Time>,
-    bounds: Res<GameBounds>,
-    mut query: Query<(Entity, &mut Transform, &Velocity), With<PowerUpItem>>,
-) {
-    let dt = capped_delta_seconds(&time);
-    for (entity, mut transform, velocity) in &mut query {
-        transform.translation.x += velocity.0.x * dt;
-        transform.translation.y += velocity.0.y * dt;
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-        if transform.translation.x < bounds.despawn_x() {
-            commands.entity(entity).despawn();
-        }
+    #[test]
+    fn player_weapons_expire_cleanly() {
+        let mut weapons = PlayerWeapons::new();
+        weapons.activate_triple_shot(1.0);
+        weapons.activate_rapid_fire(1.0);
+        weapons.activate_pierce_shot(1.0);
+
+        let expired = weapons.tick(Duration::from_secs_f32(1.5));
+
+        assert!(expired.triple_shot);
+        assert!(expired.rapid_fire);
+        assert!(expired.pierce_shot);
+        assert!(weapons.remaining_triple_shot().is_none());
+        assert!(weapons.remaining_rapid_fire().is_none());
+        assert!(weapons.remaining_pierce_shot().is_none());
     }
-}
 
-fn powerup_collection(
-    mut commands: Commands,
-    powerup_query: Query<(Entity, &Transform, &Collider, &PowerUpItem)>,
-    mut player_query: Query<
-        (Entity, &Transform, &Collider, &mut PlayerStats, &mut Health),
-        With<Player>,
-    >,
-) {
-    let Ok((player_entity, player_tf, player_collider, mut stats, mut health)) =
-        player_query.single_mut()
-    else {
-        return;
-    };
+    #[test]
+    fn player_status_reports_invincibility() {
+        let mut status = PlayerStatus::default();
+        assert!(!status.is_invincible());
 
-    for (entity, transform, collider, item) in &powerup_query {
-        if !super::combat::collide(
-            player_tf.translation,
-            player_collider.size,
-            transform.translation,
-            collider.size,
-        ) {
-            continue;
-        }
+        status.grant_invincibility(INVINCIBILITY_SECONDS);
 
-        match item.0 {
-            PowerUpType::TripleShot => {
-                stats.weapon_level = 1;
-                commands.entity(player_entity).insert(TripleShot::new());
-                crate::dlog!("Power-up: Triple Shot! ({:.0}s)", POWERUP_TRIPLE_DURATION);
-            }
-            PowerUpType::RapidFire => {
-                commands.entity(player_entity).insert(RapidFire::new());
-                crate::dlog!("Power-up: Rapid Fire! ({:.0}s)", POWERUP_RAPID_DURATION);
-            }
-            PowerUpType::PierceShot => {
-                commands.entity(player_entity).insert(PierceShot::new());
-                crate::dlog!("Power-up: Pierce Shot! ({:.0}s)", POWERUP_PIERCE_DURATION);
-            }
-            PowerUpType::Shield => {
-                health.current = (health.current + 1).min(health.max);
-                crate::dlog!("Power-up: Shield! (HP: {})", health.current);
-            }
-        }
-
-        commands.entity(entity).despawn();
+        assert!(status.is_invincible());
+        assert!(status.remaining_invincibility().is_some());
     }
 }
