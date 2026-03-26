@@ -11,6 +11,7 @@ use super::{GameplaySet, SimulationSet};
 
 pub use components::{Difficulty, Enemy, EnemyBullet, EnemyType, SpawnState};
 pub(crate) use components::{ENEMY_BULLET_SIZE, ENEMY_SCALE, ENEMY_SIZE};
+#[allow(unused_imports)]
 pub use spawn::{enemy_fire_interval_for_level, spawn_interval_for_level};
 
 pub struct EnemyPlugin;

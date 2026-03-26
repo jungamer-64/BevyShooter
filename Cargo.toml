@@ -13,7 +13,7 @@ dev-logging = ["bevy/bevy_log"]
 fastrand = { version = "2.3", features = ["js"] }
 smallvec = "1.15"
 
-# Common Bevy dependency (features shared by all platforms)
+# Shared Bevy features for native and wasm builds.
 [dependencies.bevy]
 version = "0.18"
 default-features = false
@@ -46,22 +46,14 @@ features = [
     "default_font",
 ]
 
-# Native: add multi_threaded
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies.bevy]
-version = "0.18"
-default-features = false
-features = ["multi_threaded", "x11", "wayland"]
+# Native-only Bevy features.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+bevy = { version = "0.18", default-features = false, features = ["multi_threaded", "x11", "wayland"] }
 
-# WASM: add WebGL2
-[target.'cfg(target_arch = "wasm32")'.dependencies.bevy]
-version = "0.18"
-default-features = false
-features = ["webgl2"]
-
-# getrandom WASM support
+# Wasm-only Bevy features and JS randomness support.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
+bevy = { version = "0.18", default-features = false, features = ["webgl2"] }
 getrandom = { version = "0.4", features = ["wasm_js"] }
-
 
 [profile.release]
 opt-level = "z"

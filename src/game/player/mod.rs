@@ -13,6 +13,7 @@ use super::{GameplaySet, SimulationSet};
 pub(crate) use components::{
     BULLET_SCALE, BULLET_SIZE, INVINCIBILITY_SECONDS, PLAYER_MAX_HP, PLAYER_SCALE, PLAYER_SIZE,
 };
+#[allow(unused_imports)]
 pub use components::{
     Bullet, Invincible, PierceShot, Player, PlayerBundle, PlayerEffectSnapshot, PlayerWeapons,
     RapidFire, TimedEffectComponent, TripleShot,

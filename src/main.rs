@@ -12,8 +12,10 @@ macro_rules! dlog {
     ($($t:tt)*) => {};
 }
 
+mod app;
 mod game;
+mod platform;
 
 fn main() {
-    game::run();
+    app::run();
 }

@@ -1,7 +1,4 @@
-#[cfg(target_arch = "wasm32")]
-use bevy::asset::AssetMetaCheck;
 use bevy::prelude::*;
-use bevy::window::{WindowPlugin, WindowResolution};
 
 pub mod assets;
 pub mod background;
@@ -16,38 +13,6 @@ pub mod state;
 pub mod ui;
 
 use core::MainCamera;
-
-pub fn run() {
-    #[allow(unused_mut)]
-    let mut window = Window {
-        title: "Bevy Shooter".into(),
-        resolution: WindowResolution::new(800, 600),
-        ..default()
-    };
-
-    #[cfg(target_arch = "wasm32")]
-    {
-        window.canvas = Some("#bevy".to_string());
-        window.fit_canvas_to_parent = true;
-        window.prevent_default_event_handling = true;
-    }
-
-    App::new()
-        .add_plugins(
-            DefaultPlugins
-                .set(WindowPlugin {
-                    primary_window: Some(window),
-                    ..default()
-                })
-                .set(AssetPlugin {
-                    #[cfg(target_arch = "wasm32")]
-                    meta_check: AssetMetaCheck::Never,
-                    ..default()
-                }),
-        )
-        .add_plugins(GamePlugin)
-        .run();
-}
 
 pub struct GamePlugin;
 
@@ -130,9 +95,7 @@ fn setup_camera(mut commands: Commands) {
 mod tests {
     use super::*;
     use crate::game::assets::GameAssets;
-    use crate::game::combat::{
-        BulletEnemyContact, PlayerBulletContact, PlayerEnemyContact,
-    };
+    use crate::game::combat::{BulletEnemyContact, PlayerBulletContact, PlayerEnemyContact};
     use crate::game::core::{GameBounds, Score};
     use crate::game::enemy::{Difficulty, SpawnState};
     use crate::game::state::{GameState, PlayState};
