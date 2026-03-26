@@ -23,8 +23,7 @@ impl Plugin for UiPlugin {
                     hud::update_hp_text,
                     hud::update_powerup_ui,
                 )
-                    .in_set(super::GameplaySet::Ui)
-                    .run_if(in_state(GameState::InGame).and(in_state(PlayState::Playing))),
+                    .in_set(super::GameplaySet::Ui),
             );
     }
 }

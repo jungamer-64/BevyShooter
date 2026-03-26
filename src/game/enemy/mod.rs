@@ -6,10 +6,10 @@ mod visuals;
 
 use bevy::prelude::*;
 
-use super::state::{GameState, PlayState};
+use super::state::GameState;
 use super::{GameplaySet, SimulationSet};
 
-pub use components::{Difficulty, Enemy, EnemyBullet, EnemyHitFlash, EnemyType, SpawnState};
+pub use components::{Difficulty, Enemy, EnemyBullet, EnemyType, SpawnState};
 pub(crate) use components::{ENEMY_BULLET_SIZE, ENEMY_SCALE, ENEMY_SIZE};
 pub use spawn::{enemy_fire_interval_for_level, spawn_interval_for_level};
 
@@ -20,6 +20,7 @@ impl Plugin for EnemyPlugin {
         app.init_resource::<SpawnState>()
             .init_resource::<Difficulty>()
             .add_systems(OnEnter(GameState::InGame), spawn::reset_enemy_progress)
+            .add_observer(visuals::on_enemy_hit)
             .add_systems(
                 Update,
                 (
@@ -30,20 +31,15 @@ impl Plugin for EnemyPlugin {
                     fire::enemy_fire_system,
                 )
                     .chain()
-                    .in_set(SimulationSet::Prepare)
-                    .run_if(in_state(GameState::InGame).and(in_state(PlayState::Playing))),
+                    .in_set(SimulationSet::Prepare),
             )
             .add_systems(
                 Update,
-                behavior::clamp_enemy_position
-                    .in_set(SimulationSet::PostMove)
-                    .run_if(in_state(GameState::InGame).and(in_state(PlayState::Playing))),
+                behavior::clamp_enemy_position.in_set(SimulationSet::PostMove),
             )
             .add_systems(
                 Update,
-                visuals::update_enemy_visuals
-                    .in_set(GameplaySet::Fx)
-                    .run_if(in_state(GameState::InGame).and(in_state(PlayState::Playing))),
+                visuals::update_enemy_visuals.in_set(GameplaySet::Fx),
             );
     }
 }

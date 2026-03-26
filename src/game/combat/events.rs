@@ -1,7 +1,5 @@
 use bevy::prelude::*;
 
-use super::super::powerup::PowerUpKind;
-
 #[derive(Message, Debug, Clone, Copy)]
 pub struct BulletEnemyContact {
     pub bullet: Entity,
@@ -20,22 +18,21 @@ pub struct PlayerBulletContact {
     pub bullet: Entity,
 }
 
-#[derive(Message, Debug, Clone, Copy)]
-pub struct DespawnRequest(pub Entity);
+#[derive(Event, Debug, Clone, Copy)]
+pub struct DespawnRequestedEvent(pub Entity);
 
-#[derive(Message, Debug, Clone, Copy)]
-pub struct EnemyHit(pub Entity);
+#[derive(Event, Debug, Clone, Copy)]
+pub struct EnemyHitEvent(pub Entity);
 
-#[derive(Message, Debug, Clone, Copy)]
-pub struct EnemyDestroyed {
+#[derive(Event, Debug, Clone, Copy)]
+pub struct EnemyDestroyedEvent {
     pub entity: Entity,
     pub position: Vec3,
     pub score: u32,
-    pub drop: Option<PowerUpKind>,
 }
 
-#[derive(Message, Debug, Clone, Copy)]
-pub struct PlayerDamaged {
+#[derive(Event, Debug, Clone, Copy)]
+pub struct PlayerDamagedEvent {
     pub player: Entity,
     pub defeated: bool,
     pub consumed: Entity,

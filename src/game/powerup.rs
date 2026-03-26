@@ -1,9 +1,9 @@
 use bevy::prelude::*;
 
 use super::GameplaySet;
+use super::combat::{DespawnRequestedEvent, EnemyDestroyedEvent};
 use super::core::{Collider, Health, InGameEntity, OffscreenDespawn, Velocity, layer};
 use super::player::{PierceShot, Player, RapidFire, TripleShot};
-use super::state::{GameState, PlayState};
 
 const POWERUP_DROP_RATE: f32 = 0.3;
 const POWERUP_SPEED: f32 = 100.0;
@@ -29,31 +29,17 @@ impl PowerUpKind {
             Self::Shield => Color::srgb(0.2, 1.0, 0.2),
         }
     }
-
-    pub fn apply(self, commands: &mut Commands, player: Entity, health: &mut Health) {
-        match self {
-            Self::TripleShot => {
-                commands
-                    .entity(player)
-                    .insert(TripleShot::new(POWERUP_TRIPLE_DURATION));
-            }
-            Self::RapidFire => {
-                commands
-                    .entity(player)
-                    .insert(RapidFire::new(POWERUP_RAPID_DURATION));
-            }
-            Self::PierceShot => {
-                commands
-                    .entity(player)
-                    .insert(PierceShot::new(POWERUP_PIERCE_DURATION));
-            }
-            Self::Shield => health.heal(1),
-        }
-    }
 }
 
 #[derive(Component)]
 pub struct PowerUpPickup(pub PowerUpKind);
+
+#[derive(Event, Debug, Clone, Copy)]
+pub struct PowerUpCollectedEvent {
+    pub pickup: Entity,
+    pub player: Entity,
+    pub kind: PowerUpKind,
+}
 
 #[derive(Bundle)]
 struct PowerUpBundle {
@@ -84,11 +70,11 @@ pub struct PowerUpPlugin;
 
 impl Plugin for PowerUpPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(
+        app.add_observer(on_powerup_collected)
+            .add_observer(spawn_drop_on_enemy_destroyed)
+            .add_systems(
             Update,
-            collect_powerups
-                .in_set(GameplaySet::Detect)
-                .run_if(in_state(GameState::InGame).and(in_state(PlayState::Playing))),
+            collect_powerups.in_set(GameplaySet::Detect),
         );
     }
 }
@@ -113,12 +99,9 @@ pub fn roll_drop() -> Option<PowerUpKind> {
 fn collect_powerups(
     mut commands: Commands,
     powerups: Query<(Entity, &Transform, &Collider, &PowerUpPickup)>,
-    mut player: Query<(Entity, &Transform, &Collider, &mut Health), With<Player>>,
+    player: Single<(Entity, &Transform, &Collider), With<Player>>,
 ) {
-    let Ok((player_entity, player_transform, player_collider, mut health)) = player.single_mut()
-    else {
-        return;
-    };
+    let (player_entity, player_transform, player_collider) = player.into_inner();
 
     for (entity, transform, collider, item) in &powerups {
         if !player_collider.intersects(
@@ -129,33 +112,153 @@ fn collect_powerups(
             continue;
         }
 
-        item.0.apply(&mut commands, player_entity, &mut health);
-        commands.entity(entity).despawn();
+        commands.trigger(PowerUpCollectedEvent {
+            pickup: entity,
+            player: player_entity,
+            kind: item.0,
+        });
+    }
+}
+
+fn on_powerup_collected(
+    event: On<PowerUpCollectedEvent>,
+    mut commands: Commands,
+    mut players: Query<&mut Health, With<Player>>,
+) {
+    let Ok(mut health) = players.get_mut(event.player) else {
+        return;
+    };
+
+    match event.kind {
+        PowerUpKind::TripleShot => {
+            commands
+                .entity(event.player)
+                .insert(TripleShot::new(POWERUP_TRIPLE_DURATION));
+        }
+        PowerUpKind::RapidFire => {
+            commands
+                .entity(event.player)
+                .insert(RapidFire::new(POWERUP_RAPID_DURATION));
+        }
+        PowerUpKind::PierceShot => {
+            commands
+                .entity(event.player)
+                .insert(PierceShot::new(POWERUP_PIERCE_DURATION));
+        }
+        PowerUpKind::Shield => health.heal(1),
+    }
+
+    commands.trigger(DespawnRequestedEvent(event.pickup));
+}
+
+fn spawn_drop_on_enemy_destroyed(event: On<EnemyDestroyedEvent>, mut commands: Commands) {
+    if let Some(kind) = roll_drop() {
+        spawn_pickup(&mut commands, event.position, kind);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::game::core::GameCorePlugin;
     use crate::game::player::{PierceShot, RapidFire, TripleShot};
     use bevy::app::App;
 
     #[test]
     fn powerups_apply_expected_state_changes() {
         let mut app = App::new();
-        let player = app.world_mut().spawn_empty().id();
-        let mut health = Health::new(3);
-        health.current = 2;
+        app.add_plugins(PowerUpPlugin);
+        let player = app.world_mut().spawn((Player, Health::new(3))).id();
+        let shield = app
+            .world_mut()
+            .spawn((PowerUpPickup(PowerUpKind::Shield),))
+            .id();
+        {
+            let mut health = app
+                .world_mut()
+                .get_mut::<Health>(player)
+                .expect("player health");
+            health.current = 2;
+        }
 
-        PowerUpKind::TripleShot.apply(&mut app.world_mut().commands(), player, &mut health);
-        PowerUpKind::RapidFire.apply(&mut app.world_mut().commands(), player, &mut health);
-        PowerUpKind::PierceShot.apply(&mut app.world_mut().commands(), player, &mut health);
-        PowerUpKind::Shield.apply(&mut app.world_mut().commands(), player, &mut health);
-        app.update();
+        app.world_mut().trigger(PowerUpCollectedEvent {
+            pickup: shield,
+            player,
+            kind: PowerUpKind::TripleShot,
+        });
+        app.world_mut().trigger(PowerUpCollectedEvent {
+            pickup: shield,
+            player,
+            kind: PowerUpKind::RapidFire,
+        });
+        app.world_mut().trigger(PowerUpCollectedEvent {
+            pickup: shield,
+            player,
+            kind: PowerUpKind::PierceShot,
+        });
+        app.world_mut().trigger(PowerUpCollectedEvent {
+            pickup: shield,
+            player,
+            kind: PowerUpKind::Shield,
+        });
+        app.world_mut().flush();
 
         assert!(app.world().entity(player).contains::<TripleShot>());
         assert!(app.world().entity(player).contains::<RapidFire>());
         assert!(app.world().entity(player).contains::<PierceShot>());
-        assert_eq!(health.current, 3);
+        assert_eq!(
+            app.world()
+                .entity(player)
+                .get::<Health>()
+                .expect("player health")
+                .current,
+            3
+        );
+    }
+
+    #[test]
+    fn collecting_powerup_despawns_pickup_and_applies_effect() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.add_plugins((GameCorePlugin, PowerUpPlugin));
+
+        let player = app.world_mut().spawn((
+            Player,
+            Transform::default(),
+            Collider {
+                size: Vec2::splat(20.0),
+            },
+            Health::new(3),
+        ))
+        .id();
+
+        let pickup = app.world_mut().spawn((
+            PowerUpPickup(PowerUpKind::Shield),
+            Transform::default(),
+            Collider {
+                size: Vec2::splat(20.0),
+            },
+        ))
+        .id();
+
+        {
+            let mut health = app
+                .world_mut()
+                .get_mut::<Health>(player)
+                .expect("player health");
+            health.current = 2;
+        }
+
+        app.update();
+
+        assert!(!app.world().entities().contains(pickup));
+        assert_eq!(
+            app.world()
+                .entity(player)
+                .get::<Health>()
+                .expect("player health")
+                .current,
+            3
+        );
     }
 }

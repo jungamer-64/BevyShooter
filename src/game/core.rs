@@ -3,7 +3,7 @@ use bevy::window::{PrimaryWindow, WindowResized};
 use std::ops::Range;
 use std::time::Duration;
 
-use super::state::{GameState, PlayState};
+use super::combat::{DespawnRequestedEvent, EnemyDestroyedEvent, PlayerDamagedEvent};
 use super::{ResolveSet, SimulationSet};
 
 const DEFAULT_HALF_WIDTH: f32 = 400.0;
@@ -155,18 +155,19 @@ impl Plugin for GameCorePlugin {
             .init_resource::<Score>()
             .add_systems(Startup, sync_bounds)
             .add_systems(PreUpdate, sync_bounds_on_resize)
+            .add_observer(handle_despawn_requests)
+            .add_observer(cleanup_destroyed_enemy)
+            .add_observer(cleanup_consumed_entity)
+            .add_observer(track_destroyed_enemy_score)
             .add_systems(
                 Update,
-                apply_velocity
-                    .in_set(SimulationSet::Move)
-                    .run_if(in_state(GameState::InGame).and(in_state(PlayState::Playing))),
+                apply_velocity.in_set(SimulationSet::Move),
             )
             .add_systems(
                 Update,
                 (tick_lifetimes, despawn_offscreen)
                     .chain()
-                    .in_set(ResolveSet::Cleanup)
-                    .run_if(in_state(GameState::InGame).and(in_state(PlayState::Playing))),
+                    .in_set(ResolveSet::Cleanup),
             );
     }
 }
@@ -199,7 +200,14 @@ fn sync_bounds(windows: Query<&Window, With<PrimaryWindow>>, mut bounds: ResMut<
     bounds.half_height = window.height() * 0.5;
 }
 
-fn sync_bounds_on_resize(mut reader: MessageReader<WindowResized>, mut bounds: ResMut<GameBounds>) {
+fn sync_bounds_on_resize(
+    reader: Option<MessageReader<WindowResized>>,
+    mut bounds: ResMut<GameBounds>,
+) {
+    let Some(mut reader) = reader else {
+        return;
+    };
+
     for event in reader.read() {
         bounds.half_width = event.width * 0.5;
         bounds.half_height = event.height * 0.5;
@@ -238,6 +246,25 @@ fn despawn_offscreen(
             commands.entity(entity).despawn();
         }
     }
+}
+
+fn handle_despawn_requests(event: On<DespawnRequestedEvent>, mut commands: Commands) {
+    commands.entity(event.0).despawn();
+}
+
+fn cleanup_destroyed_enemy(event: On<EnemyDestroyedEvent>, mut commands: Commands) {
+    commands.trigger(DespawnRequestedEvent(event.entity));
+}
+
+fn cleanup_consumed_entity(event: On<PlayerDamagedEvent>, mut commands: Commands) {
+    commands.trigger(DespawnRequestedEvent(event.consumed));
+}
+
+fn track_destroyed_enemy_score(
+    event: On<EnemyDestroyedEvent>,
+    mut score: ResMut<Score>,
+) {
+    score.0 += event.score;
 }
 
 #[cfg(test)]

@@ -10,8 +10,8 @@ use super::{GameplaySet, ResolveSet};
 
 pub use detect::{HitList, Pierce};
 pub use events::{
-    BulletEnemyContact, DespawnRequest, EnemyDestroyed, EnemyHit, PlayerBulletContact,
-    PlayerDamaged, PlayerEnemyContact,
+    BulletEnemyContact, DespawnRequestedEvent, EnemyDestroyedEvent, EnemyHitEvent,
+    PlayerBulletContact, PlayerDamagedEvent, PlayerEnemyContact,
 };
 
 pub struct CombatPlugin;
@@ -22,10 +22,6 @@ impl Plugin for CombatPlugin {
             .add_message::<BulletEnemyContact>()
             .add_message::<PlayerEnemyContact>()
             .add_message::<PlayerBulletContact>()
-            .add_message::<DespawnRequest>()
-            .add_message::<EnemyHit>()
-            .add_message::<EnemyDestroyed>()
-            .add_message::<PlayerDamaged>()
             .add_systems(
                 Update,
                 (
@@ -42,11 +38,9 @@ impl Plugin for CombatPlugin {
                 (
                     resolve::resolve_bullet_enemy_contacts,
                     resolve::resolve_player_contacts,
-                    resolve::apply_combat_outcomes,
                 )
                     .chain()
-                    .in_set(ResolveSet::Apply)
-                    .run_if(in_state(GameState::InGame).and(in_state(PlayState::Playing))),
+                    .in_set(ResolveSet::Apply),
             );
     }
 }
@@ -54,8 +48,7 @@ impl Plugin for CombatPlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::game::core::{Collider, GameBounds, Health, Score};
-    use crate::game::effects::ShakeEvent;
+    use crate::game::core::{Collider, GameBounds, GameCorePlugin, Health, Score};
     use crate::game::enemy::{Enemy, EnemyBullet, EnemyType};
     use crate::game::player::{Bullet, Invincible, Player};
     use crate::game::state::{GameState, PlayState};
@@ -69,8 +62,7 @@ mod tests {
         app.insert_state(PlayState::Playing);
         app.insert_resource(GameBounds::default());
         app.insert_resource(Score(0));
-        app.add_message::<ShakeEvent>();
-        app.add_plugins(CombatPlugin);
+        app.add_plugins((GameCorePlugin, CombatPlugin));
         app
     }
 

@@ -2,7 +2,7 @@ use bevy::prelude::*;
 use std::time::Duration;
 
 use super::super::core::{Health, InGameEntity, Score};
-use super::super::player::{Invincible, PLAYER_MAX_HP, PierceShot, Player, RapidFire, TripleShot};
+use super::super::player::{PLAYER_MAX_HP, Player, PlayerEffectSnapshot};
 use super::TextBlockBundle;
 
 const SCORE_FONT_SIZE: f32 = 30.0;
@@ -16,18 +16,6 @@ pub struct HpText;
 
 #[derive(Component)]
 pub struct PowerUpText;
-
-type PlayerHudQuery<'w, 's> = Query<
-    'w,
-    's,
-    (
-        Option<&'static TripleShot>,
-        Option<&'static RapidFire>,
-        Option<&'static PierceShot>,
-        Option<&'static Invincible>,
-    ),
-    With<Player>,
->;
 
 pub fn setup_hud(mut commands: Commands) {
     commands.spawn((
@@ -79,41 +67,37 @@ pub fn setup_hud(mut commands: Commands) {
     ));
 }
 
-pub fn update_score_text(score: Res<Score>, mut query: Query<&mut Text, With<ScoreText>>) {
+pub fn update_score_text(score: Res<Score>, mut text: Single<&mut Text, With<ScoreText>>) {
     if !score.is_changed() {
         return;
     }
-
-    let Ok(mut text) = query.single_mut() else {
-        return;
-    };
 
     text.0 = score_label(score.0);
 }
 
 pub fn update_hp_text(
-    player_query: Query<Ref<Health>, With<Player>>,
-    mut query: Query<&mut Text, With<HpText>>,
+    player_health: Single<Ref<Health>, With<Player>>,
+    mut text: Single<&mut Text, With<HpText>>,
 ) {
-    let Ok(health) = player_query.single() else {
-        return;
-    };
-
-    if !health.is_changed() {
+    if !player_health.is_changed() {
         return;
     }
 
-    let Ok(mut text) = query.single_mut() else {
-        return;
-    };
-
-    text.0 = hp_label(health.current);
+    text.0 = hp_label(player_health.current);
 }
 
 pub fn update_powerup_ui(
     time: Res<Time>,
-    player_query: PlayerHudQuery,
-    mut text_query: Query<&mut Text, With<PowerUpText>>,
+    player: Single<
+        (
+            Option<&'static super::super::player::TripleShot>,
+            Option<&'static super::super::player::RapidFire>,
+            Option<&'static super::super::player::PierceShot>,
+            Option<&'static super::super::player::Invincible>,
+        ),
+        With<Player>,
+    >,
+    mut text: Single<&mut Text, With<PowerUpText>>,
     mut ui_timer: Local<Timer>,
 ) {
     if ui_timer.duration() == Duration::ZERO {
@@ -125,22 +109,14 @@ pub fn update_powerup_ui(
         return;
     }
 
-    let Ok((triple_shot, rapid_fire, pierce_shot, invincible)) = player_query.single() else {
-        return;
-    };
-    let Ok(mut text) = text_query.single_mut() else {
-        return;
-    };
+    let (triple_shot, rapid_fire, pierce_shot, invincible) = *player;
+    let effects =
+        PlayerEffectSnapshot::from_components(triple_shot, rapid_fire, pierce_shot, invincible);
 
-    text.0 = powerup_lines(triple_shot, rapid_fire, pierce_shot, invincible);
+    text.0 = powerup_lines(effects);
 }
 
-fn powerup_lines(
-    triple_shot: Option<&TripleShot>,
-    rapid_fire: Option<&RapidFire>,
-    pierce_shot: Option<&PierceShot>,
-    invincible: Option<&Invincible>,
-) -> String {
+fn powerup_lines(effects: PlayerEffectSnapshot) -> String {
     let mut text = String::new();
     let mut first_line = true;
 
@@ -148,25 +124,25 @@ fn powerup_lines(
         &mut text,
         &mut first_line,
         "TRIPLE",
-        triple_shot.map(TripleShot::remaining_secs),
+        effects.triple_shot,
     );
     append_effect_line(
         &mut text,
         &mut first_line,
         "RAPID",
-        rapid_fire.map(RapidFire::remaining_secs),
+        effects.rapid_fire,
     );
     append_effect_line(
         &mut text,
         &mut first_line,
         "PIERCE",
-        pierce_shot.map(PierceShot::remaining_secs),
+        effects.pierce_shot,
     );
     append_effect_line(
         &mut text,
         &mut first_line,
         "INVINCIBLE",
-        invincible.map(Invincible::remaining_secs),
+        effects.invincible.map(|state| state.remaining_secs),
     );
 
     text
@@ -208,7 +184,7 @@ mod tests {
 
     #[test]
     fn powerup_lines_skip_missing_effects() {
-        let text = powerup_lines(None, None, None, None);
+        let text = powerup_lines(PlayerEffectSnapshot::default());
         assert!(text.is_empty());
     }
 }

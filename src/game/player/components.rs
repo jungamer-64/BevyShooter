@@ -98,6 +98,65 @@ pub trait TimedEffectComponent {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct InvincibilitySnapshot {
+    pub remaining_secs: f32,
+    pub elapsed_secs: f32,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct PlayerEffectSnapshot {
+    pub triple_shot: Option<f32>,
+    pub rapid_fire: Option<f32>,
+    pub pierce_shot: Option<f32>,
+    pub invincible: Option<InvincibilitySnapshot>,
+}
+
+impl PlayerEffectSnapshot {
+    pub fn from_components(
+        triple_shot: Option<&TripleShot>,
+        rapid_fire: Option<&RapidFire>,
+        pierce_shot: Option<&PierceShot>,
+        invincible: Option<&Invincible>,
+    ) -> Self {
+        Self {
+            triple_shot: Self::remaining(triple_shot),
+            rapid_fire: Self::remaining(rapid_fire),
+            pierce_shot: Self::remaining(pierce_shot),
+            invincible: invincible.map(|effect| InvincibilitySnapshot {
+                remaining_secs: effect.remaining_secs(),
+                elapsed_secs: effect.elapsed_secs(),
+            }),
+        }
+    }
+
+    pub fn has_triple_shot(&self) -> bool {
+        self.triple_shot.is_some()
+    }
+
+    pub fn has_rapid_fire(&self) -> bool {
+        self.rapid_fire.is_some()
+    }
+
+    pub fn has_pierce_shot(&self) -> bool {
+        self.pierce_shot.is_some()
+    }
+
+    pub fn is_invincible(&self) -> bool {
+        self.invincible.is_some()
+    }
+
+    pub fn invincible_visible(&self) -> bool {
+        self.invincible
+            .map(|effect| (effect.elapsed_secs * 10.0) as i32 % 2 == 0)
+            .unwrap_or(true)
+    }
+
+    fn remaining<T: TimedEffectComponent>(effect: Option<&T>) -> Option<f32> {
+        effect.map(TimedEffectComponent::remaining_secs)
+    }
+}
+
 macro_rules! timed_effect_component {
     ($name:ident) => {
         #[derive(Component, Debug)]
@@ -122,6 +181,7 @@ macro_rules! timed_effect_component {
                 <Self as TimedEffectComponent>::new(seconds)
             }
 
+            #[allow(dead_code)]
             pub fn remaining_secs(&self) -> f32 {
                 <Self as TimedEffectComponent>::remaining_secs(self)
             }

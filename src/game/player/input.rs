@@ -7,12 +7,8 @@ const PLAYER_SPEED: f32 = 500.0;
 
 pub fn capture_player_input(
     keyboard_input: Res<ButtonInput<KeyCode>>,
-    mut query: Query<&mut PlayerIntent, With<Player>>,
+    mut intent: Single<&mut PlayerIntent, With<Player>>,
 ) {
-    let Ok(mut intent) = query.single_mut() else {
-        return;
-    };
-
     let mut move_dir = Vec2::ZERO;
     if keyboard_input.pressed(KeyCode::ArrowUp) || keyboard_input.pressed(KeyCode::KeyW) {
         move_dir.y += 1.0;
@@ -38,12 +34,9 @@ pub fn capture_player_input(
 pub fn apply_player_movement(
     time: Res<Time>,
     bounds: Res<GameBounds>,
-    mut query: Query<(&PlayerIntent, &mut Transform), With<Player>>,
+    player: Single<(&PlayerIntent, &mut Transform), With<Player>>,
 ) {
-    let Ok((intent, mut transform)) = query.single_mut() else {
-        return;
-    };
-
+    let (intent, mut transform) = player.into_inner();
     let dt = capped_delta_seconds(&time);
     let (x_min, x_max) = bounds.player_x_range(20.0);
     let (y_min, y_max) = bounds.player_y_range(20.0);

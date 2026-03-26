@@ -6,6 +6,7 @@ use bevy::window::{WindowPlugin, WindowResolution};
 pub mod assets;
 pub mod background;
 pub mod combat;
+pub mod conditions;
 pub mod core;
 pub mod effects;
 pub mod enemy;
@@ -63,7 +64,8 @@ impl Plugin for GamePlugin {
                     GameplaySet::Ui,
                     GameplaySet::Fx,
                 )
-                    .chain(),
+                    .chain()
+                    .run_if(conditions::gameplay_active),
             )
             .configure_sets(
                 Update,
@@ -129,8 +131,7 @@ mod tests {
     use super::*;
     use crate::game::assets::GameAssets;
     use crate::game::combat::{
-        BulletEnemyContact, DespawnRequest, EnemyDestroyed, EnemyHit, PlayerBulletContact,
-        PlayerDamaged, PlayerEnemyContact,
+        BulletEnemyContact, PlayerBulletContact, PlayerEnemyContact,
     };
     use crate::game::core::{GameBounds, Score};
     use crate::game::enemy::{Difficulty, SpawnState};
@@ -162,9 +163,5 @@ mod tests {
             app.world()
                 .contains_resource::<Messages<PlayerBulletContact>>()
         );
-        assert!(app.world().contains_resource::<Messages<DespawnRequest>>());
-        assert!(app.world().contains_resource::<Messages<EnemyHit>>());
-        assert!(app.world().contains_resource::<Messages<EnemyDestroyed>>());
-        assert!(app.world().contains_resource::<Messages<PlayerDamaged>>());
     }
 }
