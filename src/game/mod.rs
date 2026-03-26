@@ -128,7 +128,10 @@ fn setup_camera(mut commands: Commands) {
 mod tests {
     use super::*;
     use crate::game::assets::GameAssets;
-    use crate::game::combat::CombatMessage;
+    use crate::game::combat::{
+        BulletEnemyContact, DespawnRequest, EnemyDestroyed, EnemyHit, PlayerBulletContact,
+        PlayerDamaged, PlayerEnemyContact,
+    };
     use crate::game::core::{GameBounds, Score};
     use crate::game::enemy::{Difficulty, SpawnState};
     use crate::game::state::{GameState, PlayState};
@@ -147,6 +150,21 @@ mod tests {
         assert!(app.world().contains_resource::<GameAssets>());
         assert!(app.world().contains_resource::<SpawnState>());
         assert!(app.world().contains_resource::<Difficulty>());
-        assert!(app.world().contains_resource::<Messages<CombatMessage>>());
+        assert!(
+            app.world()
+                .contains_resource::<Messages<BulletEnemyContact>>()
+        );
+        assert!(
+            app.world()
+                .contains_resource::<Messages<PlayerEnemyContact>>()
+        );
+        assert!(
+            app.world()
+                .contains_resource::<Messages<PlayerBulletContact>>()
+        );
+        assert!(app.world().contains_resource::<Messages<DespawnRequest>>());
+        assert!(app.world().contains_resource::<Messages<EnemyHit>>());
+        assert!(app.world().contains_resource::<Messages<EnemyDestroyed>>());
+        assert!(app.world().contains_resource::<Messages<PlayerDamaged>>());
     }
 }

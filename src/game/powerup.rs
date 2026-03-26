@@ -2,7 +2,7 @@ use bevy::prelude::*;
 
 use super::GameplaySet;
 use super::core::{Collider, Health, InGameEntity, OffscreenDespawn, Velocity, layer};
-use super::player::{Player, PlayerWeapons};
+use super::player::{PierceShot, Player, RapidFire, TripleShot};
 use super::state::{GameState, PlayState};
 
 const POWERUP_DROP_RATE: f32 = 0.3;
@@ -30,11 +30,23 @@ impl PowerUpKind {
         }
     }
 
-    pub fn apply(self, weapons: &mut PlayerWeapons, health: &mut Health) {
+    pub fn apply(self, commands: &mut Commands, player: Entity, health: &mut Health) {
         match self {
-            Self::TripleShot => weapons.activate_triple_shot(POWERUP_TRIPLE_DURATION),
-            Self::RapidFire => weapons.activate_rapid_fire(POWERUP_RAPID_DURATION),
-            Self::PierceShot => weapons.activate_pierce_shot(POWERUP_PIERCE_DURATION),
+            Self::TripleShot => {
+                commands
+                    .entity(player)
+                    .insert(TripleShot::new(POWERUP_TRIPLE_DURATION));
+            }
+            Self::RapidFire => {
+                commands
+                    .entity(player)
+                    .insert(RapidFire::new(POWERUP_RAPID_DURATION));
+            }
+            Self::PierceShot => {
+                commands
+                    .entity(player)
+                    .insert(PierceShot::new(POWERUP_PIERCE_DURATION));
+            }
             Self::Shield => health.heal(1),
         }
     }
@@ -101,9 +113,9 @@ pub fn roll_drop() -> Option<PowerUpKind> {
 fn collect_powerups(
     mut commands: Commands,
     powerups: Query<(Entity, &Transform, &Collider, &PowerUpPickup)>,
-    mut player: Query<(&Transform, &Collider, &mut PlayerWeapons, &mut Health), With<Player>>,
+    mut player: Query<(Entity, &Transform, &Collider, &mut Health), With<Player>>,
 ) {
-    let Ok((player_transform, player_collider, mut weapons, mut health)) = player.single_mut()
+    let Ok((player_entity, player_transform, player_collider, mut health)) = player.single_mut()
     else {
         return;
     };
@@ -117,7 +129,7 @@ fn collect_powerups(
             continue;
         }
 
-        item.0.apply(&mut weapons, &mut health);
+        item.0.apply(&mut commands, player_entity, &mut health);
         commands.entity(entity).despawn();
     }
 }
@@ -125,22 +137,25 @@ fn collect_powerups(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::game::player::PlayerWeapons;
+    use crate::game::player::{PierceShot, RapidFire, TripleShot};
+    use bevy::app::App;
 
     #[test]
     fn powerups_apply_expected_state_changes() {
-        let mut weapons = PlayerWeapons::default();
+        let mut app = App::new();
+        let player = app.world_mut().spawn_empty().id();
         let mut health = Health::new(3);
         health.current = 2;
 
-        PowerUpKind::TripleShot.apply(&mut weapons, &mut health);
-        PowerUpKind::RapidFire.apply(&mut weapons, &mut health);
-        PowerUpKind::PierceShot.apply(&mut weapons, &mut health);
-        PowerUpKind::Shield.apply(&mut weapons, &mut health);
+        PowerUpKind::TripleShot.apply(&mut app.world_mut().commands(), player, &mut health);
+        PowerUpKind::RapidFire.apply(&mut app.world_mut().commands(), player, &mut health);
+        PowerUpKind::PierceShot.apply(&mut app.world_mut().commands(), player, &mut health);
+        PowerUpKind::Shield.apply(&mut app.world_mut().commands(), player, &mut health);
+        app.update();
 
-        assert!(weapons.remaining_triple_shot().is_some());
-        assert!(weapons.remaining_rapid_fire().is_some());
-        assert!(weapons.remaining_pierce_shot().is_some());
+        assert!(app.world().entity(player).contains::<TripleShot>());
+        assert!(app.world().entity(player).contains::<RapidFire>());
+        assert!(app.world().entity(player).contains::<PierceShot>());
         assert_eq!(health.current, 3);
     }
 }

@@ -2,7 +2,7 @@ use bevy::prelude::*;
 
 use super::GameplaySet;
 use super::core::{InGameEntity, Lifetime, MainCamera, Velocity, frand_range, layer};
-use super::player::{Player, PlayerStatus};
+use super::player::{Invincible, Player};
 use super::state::{GameState, PlayState};
 
 const EXPLOSION_DURATION: f32 = 0.5;
@@ -49,18 +49,21 @@ pub struct EffectsPlugin;
 
 impl Plugin for EffectsPlugin {
     fn build(&self, app: &mut App) {
-        app.add_message::<ShakeEvent>().add_systems(
-            Update,
-            (
-                start_camera_shake,
-                apply_camera_shake,
-                fade_explosions,
-                update_invincibility_visuals,
-            )
-                .chain()
-                .in_set(GameplaySet::Fx)
-                .run_if(in_state(GameState::InGame).and(in_state(PlayState::Playing))),
-        );
+        app.add_message::<ShakeEvent>()
+            .add_systems(OnExit(GameState::InGame), reset_camera_shake)
+            .add_systems(OnEnter(PlayState::Paused), reset_camera_shake)
+            .add_systems(
+                Update,
+                (
+                    start_camera_shake,
+                    apply_camera_shake,
+                    fade_explosions,
+                    update_invincibility_visuals,
+                )
+                    .chain()
+                    .in_set(GameplaySet::Fx)
+                    .run_if(in_state(GameState::InGame).and(in_state(PlayState::Playing))),
+            );
     }
 }
 
@@ -163,28 +166,20 @@ fn fade_explosions(mut query: Query<(&Lifetime, &mut Sprite), With<ExplosionPart
 }
 
 fn update_invincibility_visuals(
-    time: Res<Time>,
-    mut query: Query<(&mut PlayerStatus, &mut Sprite), With<Player>>,
+    mut query: Query<(&mut Sprite, Option<&Invincible>), With<Player>>,
 ) {
-    for (mut status, mut sprite) in &mut query {
-        let Some(timer) = status.invincible.as_mut() else {
+    for (mut sprite, invincible) in &mut query {
+        let Some(invincible) = invincible else {
             sprite.color = Color::WHITE;
             continue;
         };
 
-        timer.tick(time.delta());
-
-        let elapsed = timer.elapsed_secs();
+        let elapsed = invincible.elapsed_secs();
         let visible = (elapsed * 10.0) as i32 % 2 == 0;
         sprite.color = if visible {
             Color::WHITE
         } else {
             Color::srgba(1.0, 1.0, 1.0, 0.3)
         };
-
-        if timer.is_finished() {
-            status.invincible = None;
-            sprite.color = Color::WHITE;
-        }
     }
 }
